@@ -1,10 +1,23 @@
-const { exec } = require('./db');
+const fs = require('fs');
+const path = require('path');
+const { exec, isPostgresConfigured, query } = require('./db');
 
 async function migrate() {
   console.log('Running database migrations...');
 
+  if (isPostgresConfigured()) {
+    console.log('Applying authoritative PostgreSQL / Supabase schema...');
+    const schemaSqlPath = path.join(__dirname, 'sql/schema.sql');
+    if (fs.existsSync(schemaSqlPath)) {
+      const sql = fs.readFileSync(schemaSqlPath, 'utf8');
+      await exec(sql);
+      console.log('Authoritative Supabase PostgreSQL schema verified successfully.');
+      return;
+    }
+  }
+
+  // Fallback SQLite schema for local offline development
   const schema = `
-    -- Users table
     CREATE TABLE IF NOT EXISTS users (
       user_id TEXT PRIMARY KEY,
       sap_id TEXT UNIQUE,
@@ -19,7 +32,6 @@ async function migrate() {
       last_login TEXT
     );
 
-    -- Schools table
     CREATE TABLE IF NOT EXISTS schools (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -27,7 +39,6 @@ async function migrate() {
       semesters INTEGER DEFAULT 8
     );
 
-    -- Programs table
     CREATE TABLE IF NOT EXISTS programs (
       id TEXT PRIMARY KEY,
       school_id TEXT NOT NULL,
@@ -36,7 +47,6 @@ async function migrate() {
       FOREIGN KEY (school_id) REFERENCES schools(id)
     );
 
-    -- Student Profiles table
     CREATE TABLE IF NOT EXISTS student_profiles (
       user_id TEXT PRIMARY KEY,
       full_name TEXT NOT NULL,
@@ -44,6 +54,7 @@ async function migrate() {
       program_id TEXT,
       semester INTEGER DEFAULT 1,
       year INTEGER DEFAULT 1,
+      mentor_id TEXT,
       bio TEXT,
       photo_url TEXT,
       study_mode TEXT DEFAULT 'both' CHECK(study_mode IN ('online', 'on_campus', 'both')),
@@ -57,7 +68,6 @@ async function migrate() {
       FOREIGN KEY (program_id) REFERENCES programs(id)
     );
 
-    -- Staff Profiles table
     CREATE TABLE IF NOT EXISTS staff_profiles (
       user_id TEXT PRIMARY KEY,
       full_name TEXT NOT NULL,
@@ -68,7 +78,6 @@ async function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
     );
 
-    -- Skills table
     CREATE TABLE IF NOT EXISTS skills (
       skill_id TEXT PRIMARY KEY,
       name TEXT UNIQUE NOT NULL,
@@ -77,7 +86,6 @@ async function migrate() {
       suggested_by TEXT
     );
 
-    -- User Skills table
     CREATE TABLE IF NOT EXISTS user_skills (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -89,7 +97,6 @@ async function migrate() {
       UNIQUE(user_id, skill_id, type)
     );
 
-    -- Interests table
     CREATE TABLE IF NOT EXISTS interests (
       interest_id TEXT PRIMARY KEY,
       name TEXT UNIQUE NOT NULL,
@@ -98,7 +105,6 @@ async function migrate() {
       suggested_by TEXT
     );
 
-    -- User Interests table
     CREATE TABLE IF NOT EXISTS user_interests (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -108,7 +114,6 @@ async function migrate() {
       UNIQUE(user_id, interest_id)
     );
 
-    -- Availability table
     CREATE TABLE IF NOT EXISTS availability (
       availability_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -118,7 +123,6 @@ async function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
     );
 
-    -- Buddy Requests table
     CREATE TABLE IF NOT EXISTS buddy_requests (
       request_id TEXT PRIMARY KEY,
       sender_id TEXT NOT NULL,
@@ -126,13 +130,13 @@ async function migrate() {
       note TEXT,
       status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'declined', 'cancelled')),
       needs_mentor_review INTEGER DEFAULT 0,
+      flag_reason TEXT DEFAULT 'Cross-year / academic gap',
       created_at TEXT DEFAULT (datetime('now')),
       responded_at TEXT,
       FOREIGN KEY (sender_id) REFERENCES users(user_id),
       FOREIGN KEY (receiver_id) REFERENCES users(user_id)
     );
 
-    -- Mentor Reviews table (for flagged requests)
     CREATE TABLE IF NOT EXISTS mentor_reviews (
       review_id TEXT PRIMARY KEY,
       request_id TEXT NOT NULL,
@@ -144,7 +148,6 @@ async function migrate() {
       FOREIGN KEY (mentor_id) REFERENCES users(user_id)
     );
 
-    -- Connections table
     CREATE TABLE IF NOT EXISTS connections (
       connection_id TEXT PRIMARY KEY,
       user_a TEXT NOT NULL,
@@ -156,7 +159,6 @@ async function migrate() {
       FOREIGN KEY (user_b) REFERENCES users(user_id)
     );
 
-    -- Messages table
     CREATE TABLE IF NOT EXISTS messages (
       message_id TEXT PRIMARY KEY,
       connection_id TEXT NOT NULL,
@@ -171,7 +173,6 @@ async function migrate() {
       FOREIGN KEY (sender_id) REFERENCES users(user_id)
     );
 
-    -- Study Sessions table
     CREATE TABLE IF NOT EXISTS study_sessions (
       session_id TEXT PRIMARY KEY,
       connection_id TEXT,
@@ -192,7 +193,6 @@ async function migrate() {
       FOREIGN KEY (partner_id) REFERENCES users(user_id)
     );
 
-    -- Session Attendance table
     CREATE TABLE IF NOT EXISTS session_attendance (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -204,7 +204,6 @@ async function migrate() {
       UNIQUE(session_id, user_id)
     );
 
-    -- Reviews & Ratings table
     CREATE TABLE IF NOT EXISTS reviews (
       review_id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -222,7 +221,6 @@ async function migrate() {
       UNIQUE(session_id, reviewer_id)
     );
 
-    -- Learning Resources table
     CREATE TABLE IF NOT EXISTS resources (
       resource_id TEXT PRIMARY KEY,
       mentor_id TEXT NOT NULL,
@@ -235,7 +233,6 @@ async function migrate() {
       FOREIGN KEY (mentor_id) REFERENCES users(user_id)
     );
 
-    -- Notifications table
     CREATE TABLE IF NOT EXISTS notifications (
       notification_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -247,7 +244,6 @@ async function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
 
-    -- Reports table
     CREATE TABLE IF NOT EXISTS reports (
       report_id TEXT PRIMARY KEY,
       reporter_id TEXT NOT NULL,
@@ -265,7 +261,6 @@ async function migrate() {
       FOREIGN KEY (reported_user_id) REFERENCES users(user_id)
     );
 
-    -- Audit Log table
     CREATE TABLE IF NOT EXISTS audit_log (
       log_id TEXT PRIMARY KEY,
       actor_id TEXT NOT NULL,
@@ -275,27 +270,23 @@ async function migrate() {
       created_at TEXT DEFAULT (datetime('now'))
     );
 
-    -- Settings table
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
 
-    -- Password Reset Tokens table
     CREATE TABLE IF NOT EXISTS password_resets (
       token TEXT PRIMARY KEY,
       email TEXT NOT NULL,
       expires_at TEXT NOT NULL
     );
 
-    -- Email Verification Tokens table
     CREATE TABLE IF NOT EXISTS email_verifications (
       token TEXT PRIMARY KEY,
       email TEXT NOT NULL,
       expires_at TEXT NOT NULL
     );
 
-    -- Guidance Messages from Mentors table
     CREATE TABLE IF NOT EXISTS guidance_messages (
       guidance_id TEXT PRIMARY KEY,
       mentor_id TEXT NOT NULL,
@@ -310,24 +301,18 @@ async function migrate() {
 
   await exec(schema);
   
-  // Safe migrations for newly added columns
+  // Safe migrations for newly added columns if running SQLite
   try {
     await exec(`ALTER TABLE schools ADD COLUMN semesters INTEGER DEFAULT 8;`);
-  } catch (e) {
-    // Column might already exist
-  }
+  } catch (e) {}
 
   try {
     await exec(`ALTER TABLE buddy_requests ADD COLUMN flag_reason TEXT DEFAULT 'Cross-year / academic gap';`);
-  } catch (e) {
-    // Column might already exist
-  }
+  } catch (e) {}
 
   try {
     await exec(`ALTER TABLE student_profiles ADD COLUMN mentor_id TEXT;`);
-  } catch (e) {
-    // Column might already exist
-  }
+  } catch (e) {}
 
   console.log('Database migrations completed successfully.');
 }

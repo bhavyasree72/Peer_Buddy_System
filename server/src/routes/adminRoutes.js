@@ -7,6 +7,7 @@ router.use(verifyToken, requireRole('admin'));
 
 router.get('/dashboard', adminController.getAdminDashboard);
 router.get('/users', adminController.getUsers);
+router.post('/users/create', adminController.createUser);
 router.put('/users/:userId/status', adminController.updateUserStatus);
 router.post('/users/bulk-import', adminController.bulkImportUsers);
 router.get('/reports', adminController.getReports);

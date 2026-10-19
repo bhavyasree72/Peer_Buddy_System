@@ -427,9 +427,73 @@ async function createMasterSkill(req, res) {
   }
 }
 
+// POST /api/admin/users/create
+async function createUser(req, res) {
+  try {
+    const adminId = req.user.userId;
+    const { fullName, email, password, role, sapId, department, designation } = req.body;
+
+    if (!fullName || !email || !password || !role) {
+      return res.status(400).json({ error: 'Full name, email, password, and role are required.' });
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    const allowedRoles = ['student', 'mentor', 'faculty', 'admin'];
+    if (!allowedRoles.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role specified.' });
+    }
+
+    const existing = await query('SELECT user_id FROM users WHERE email = ?', [trimmedEmail]);
+    if (existing.rowCount > 0) {
+      return res.status(400).json({ error: 'An account with this email already exists.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const userId = uuidv4();
+
+    await query(
+      `INSERT INTO users (user_id, sap_id, email, password_hash, role, status, email_verified)
+       VALUES (?, ?, ?, ?, ?, 'active', 1)`,
+      [userId, sapId ? sapId.trim() : null, trimmedEmail, passwordHash, role]
+    );
+
+    if (role === 'student') {
+      await query(
+        `INSERT INTO student_profiles (user_id, full_name, profile_completeness) VALUES (?, ?, 50)`,
+        [userId, fullName.trim()]
+      );
+    } else {
+      await query(
+        `INSERT INTO staff_profiles (user_id, full_name, department, designation, expertise)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          userId,
+          fullName.trim(),
+          department ? department.trim() : 'Academic Department',
+          designation ? designation.trim() : (role === 'mentor' ? 'Academic Mentor' : role === 'faculty' ? 'Faculty Member' : 'Administrator'),
+          `${role.charAt(0).toUpperCase() + role.slice(1)} at NMIMS`
+        ]
+      );
+    }
+
+    await query(`INSERT INTO audit_log (log_id, actor_id, action, target, details) VALUES (?, ?, 'ADMIN_USER_PROVISIONED', ?, ?)`, [
+      uuidv4(),
+      adminId,
+      trimmedEmail,
+      `Admin provisioned ${role} account for ${fullName.trim()} (${trimmedEmail})`
+    ]);
+
+    return res.status(201).json({ message: `${role.charAt(0).toUpperCase() + role.slice(1)} account created successfully.`, userId });
+  } catch (err) {
+    console.error('createUser error:', err);
+    return res.status(500).json({ error: 'Failed to create user.' });
+  }
+}
+
 module.exports = {
   getAdminDashboard,
   getUsers,
+  createUser,
   updateUserStatus,
   bulkImportUsers,
   getReports,

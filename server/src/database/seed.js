@@ -206,6 +206,12 @@ async function seed() {
           [acc.userId, acc.name, acc.department, acc.designation, acc.bio]
         );
       }
+    } else {
+      // Ensure password hash, status, email_verified stay consistent with required master credentials
+      await query(
+        `UPDATE users SET password_hash = ?, status = 'active', email_verified = 1, failed_login_attempts = 0, lockout_until = NULL WHERE email = ?`,
+        [acc.hash, acc.email]
+      );
     }
   }
 

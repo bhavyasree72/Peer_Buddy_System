@@ -36,5 +36,9 @@ yarn-error.log*
 # Database / uploads
 peer_buddy.db
 peer_buddy.db-journal
+/uploads/*
+!/uploads/.gitkeep
 /server/uploads/*
 !/server/uploads/.gitkeep
+*.dump
+*.sql.bak

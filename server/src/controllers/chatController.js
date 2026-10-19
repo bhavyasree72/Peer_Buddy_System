@@ -133,8 +133,53 @@ async function sendMessage(req, res) {
   }
 }
 
+// GET /api/chat/attachments/:messageId
+// CHANGE 3: Secure authorized download access to chat attachments
+async function downloadAttachment(req, res) {
+  try {
+    const userId = req.user.userId;
+    const { messageId } = req.params;
+
+    const msgRes = await query('SELECT * FROM messages WHERE message_id = ?', [messageId]);
+    if (msgRes.rowCount === 0) {
+      return res.status(404).json({ error: 'Attachment not found.' });
+    }
+
+    const msg = msgRes.rows[0];
+    if (!msg.attachment_url) {
+      return res.status(404).json({ error: 'No attachment for this message.' });
+    }
+
+    // Verify requesting user is a participant of the connection
+    const connRes = await query(
+      'SELECT * FROM connections WHERE connection_id = ? AND (user_a = ? OR user_b = ?)',
+      [msg.connection_id, userId, userId]
+    );
+
+    if (connRes.rowCount === 0 && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied: You are not authorized to view this attachment.' });
+    }
+
+    // Safe path resolution preventing directory traversal
+    const path = require('path');
+    const fs = require('fs');
+    const filename = path.basename(msg.attachment_url);
+    const filePath = path.resolve(__dirname, '../../../uploads', filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found on server.' });
+    }
+
+    return res.download(filePath, msg.attachment_name || filename);
+  } catch (err) {
+    console.error('downloadAttachment error:', err);
+    return res.status(500).json({ error: 'Failed to download attachment.' });
+  }
+}
+
 module.exports = {
   getConversations,
   getMessages,
-  sendMessage
+  sendMessage,
+  downloadAttachment
 };

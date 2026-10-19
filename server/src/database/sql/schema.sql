@@ -26,7 +26,8 @@ CREATE INDEX IF NOT EXISTS idx_users_sap_id ON users(sap_id);
 CREATE TABLE IF NOT EXISTS schools (
   id VARCHAR(64) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
-  code VARCHAR(64) NOT NULL UNIQUE
+  code VARCHAR(64) NOT NULL UNIQUE,
+  semesters INT DEFAULT 8
 );
 
 -- 3. Programs table
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS student_profiles (
   program_id VARCHAR(64) REFERENCES programs(id),
   semester INT DEFAULT 1,
   year INT DEFAULT 1,
+  mentor_id VARCHAR(64),
   bio VARCHAR(250),
   photo_url TEXT,
   study_mode VARCHAR(32) DEFAULT 'both' CHECK(study_mode IN ('online', 'on_campus', 'both')),
@@ -117,6 +119,7 @@ CREATE TABLE IF NOT EXISTS buddy_requests (
   note VARCHAR(200),
   status VARCHAR(32) DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'declined', 'cancelled')),
   needs_mentor_review INT DEFAULT 0,
+  flag_reason VARCHAR(255) DEFAULT 'Cross-year / academic gap',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   responded_at TIMESTAMP
 );
@@ -252,3 +255,31 @@ CREATE TABLE IF NOT EXISTS settings (
   key VARCHAR(128) PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- 19. Password Resets (Stores SHA-256 hashed single-use tokens)
+CREATE TABLE IF NOT EXISTS password_resets (
+  token VARCHAR(128) PRIMARY KEY,
+  email VARCHAR(255) NOT NULL,
+  expires_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_password_resets_email ON password_resets(email);
+
+-- 20. Email Verifications (Stores SHA-256 hashed single-use tokens)
+CREATE TABLE IF NOT EXISTS email_verifications (
+  token VARCHAR(128) PRIMARY KEY,
+  email VARCHAR(255) NOT NULL,
+  expires_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_verifications_email ON email_verifications(email);
+
+-- 21. Guidance Messages from Mentors
+CREATE TABLE IF NOT EXISTS guidance_messages (
+  guidance_id VARCHAR(64) PRIMARY KEY,
+  mentor_id VARCHAR(64) NOT NULL REFERENCES users(user_id),
+  subject VARCHAR(255),
+  target_type VARCHAR(32) NOT NULL CHECK(target_type IN ('student', 'subject', 'all')),
+  target_id VARCHAR(64),
+  message TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+

@@ -7,5 +7,6 @@ const upload = require('../middleware/upload');
 router.get('/conversations', verifyToken, chatController.getConversations);
 router.get('/messages/:connectionId', verifyToken, chatController.getMessages);
 router.post('/send', verifyToken, upload.single('attachment'), chatController.sendMessage);
+router.get('/attachments/:messageId', verifyToken, chatController.downloadAttachment);
 
 module.exports = router;

@@ -7,9 +7,12 @@
     "start": "node src/server.js",
     "seed": "node src/database/seed.js",
     "migrate": "node src/database/migrate.js",
+    "migrate:supabase": "node src/database/migrateSqliteToPostgres.js",
     "test": "node test/runner.js"
   },
   "dependencies": {
+    "@supabase/server": "^1.4.1",
+    "@supabase/supabase-js": "^2.109.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -21,6 +24,7 @@
     "pg": "^8.13.1",
     "socket.io": "^4.8.1",
     "sql.js": "^1.15.0",
-    "uuid": "^11.0.5"
+    "uuid": "^11.0.5",
+    "ws": "^8.22.0"
   }
 }

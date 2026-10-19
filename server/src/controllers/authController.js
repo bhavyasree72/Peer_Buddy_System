@@ -1,9 +1,10 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { query } = require('../database/db');
+const { query, withTransaction } = require('../database/db');
 const { generateTokens } = require('../middleware/auth');
 
-// Validation rules from doc:
+// Validation rules from NMIMS doc:
 // - NMIMS email domain only (@nmims.in or @*nmims.edu)
 // - Unique SAP ID & email
 // - Min 8 characters, at least one letter and one number
@@ -22,7 +23,14 @@ function isValidPassword(password) {
   return hasLetter && hasNumber;
 }
 
+// Helper: SHA-256 hash a plaintext token before storing in database
+function hashToken(rawToken) {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
 // POST /api/auth/register
+// CHANGE 4: Public registration creates only the permitted default role ('student').
+// Never trust a role supplied by public frontend.
 async function register(req, res) {
   try {
     const {
@@ -30,14 +38,11 @@ async function register(req, res) {
       sapId,
       email,
       password,
-      role = 'student',
       schoolId,
       programId,
       semester,
       year,
-      mentorId,
-      department,
-      designation
+      mentorId
     } = req.body;
 
     if (!fullName || !email || !password) {
@@ -53,9 +58,9 @@ async function register(req, res) {
       return res.status(400).json({ error: 'Password must be at least 8 characters long and contain at least one letter and one number.' });
     }
 
-    // Role validation
-    const allowedRoles = ['student', 'mentor', 'faculty'];
-    const chosenRole = allowedRoles.includes(role) ? role : 'student';
+    // Role enforcement: Public registration always defaults to 'student'.
+    // Mentor, Faculty, and Admin roles must be provisioned by an authorized administrator.
+    const assignedRole = 'student';
 
     // Check unique email
     const existingEmail = await query('SELECT user_id FROM users WHERE email = ?', [trimmedEmail]);
@@ -73,66 +78,53 @@ async function register(req, res) {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const userId = uuidv4();
-    const verificationToken = uuidv4();
+    
+    // Generate secure random verification token & store only its SHA-256 hash
+    const rawVerificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationTokenHash = hashToken(rawVerificationToken);
+    const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-    // Create user with active status & auto-verified in dev/pilot mode or pending with verification link
-    await query(
-      `INSERT INTO users (user_id, sap_id, email, password_hash, role, status, email_verified)
-       VALUES (?, ?, ?, ?, ?, 'active', 1)`,
-      [userId, sapId ? sapId.trim() : null, trimmedEmail, passwordHash, chosenRole]
-    );
+    await withTransaction(async (txQuery) => {
+      // Create user
+      await txQuery(
+        `INSERT INTO users (user_id, sap_id, email, password_hash, role, status, email_verified)
+         VALUES (?, ?, ?, ?, ?, 'active', 1)`,
+        [userId, sapId ? sapId.trim() : null, trimmedEmail, passwordHash, assignedRole]
+      );
 
-    if (chosenRole === 'student') {
-      await query(
+      // Student profile
+      await txQuery(
         `INSERT INTO student_profiles (user_id, full_name, school_id, program_id, semester, year, mentor_id, profile_completeness)
          VALUES (?, ?, ?, ?, ?, ?, ?, 40)`,
         [userId, fullName.trim(), schoolId || null, programId || null, semester || 1, year || 1, mentorId || null]
       );
 
-      // If a mentor was selected, automatically establish a connection between student and mentor
+      // Auto-connect to mentor if selected
       if (mentorId) {
         const connectionId = uuidv4();
-        await query(
+        await txQuery(
           `INSERT INTO connections (connection_id, user_a, user_b, status) VALUES (?, ?, ?, 'active')`,
           [connectionId, userId, mentorId]
         );
       }
-    } else {
-      // Mentor or Faculty
-      await query(
-        `INSERT INTO staff_profiles (user_id, full_name, department, designation, expertise)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          userId,
-          fullName.trim(),
-          department ? department.trim() : (chosenRole === 'mentor' ? 'Academic Mentorship' : 'Academic Faculty'),
-          designation ? designation.trim() : (chosenRole === 'mentor' ? 'Mentor' : 'Faculty Member'),
-          `${chosenRole.charAt(0).toUpperCase() + chosenRole.slice(1)} at NMIMS`
-        ]
+
+      // Store hashed verification token
+      await txQuery(
+        `INSERT INTO email_verifications (token, email, expires_at) VALUES (?, ?, ?)`,
+        [verificationTokenHash, trimmedEmail, verificationExpiresAt]
       );
-    }
 
-    // Store verification token
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    await query(`INSERT INTO email_verifications (token, email, expires_at) VALUES (?, ?, ?)`, [
-      verificationToken,
-      trimmedEmail,
-      expiresAt
-    ]);
-
-    // Audit log
-    await query(`INSERT INTO audit_log (log_id, actor_id, action, target, details) VALUES (?, ?, 'USER_REGISTERED', ?, ?)`, [
-      uuidv4(),
-      userId,
-      trimmedEmail,
-      `${chosenRole.charAt(0).toUpperCase() + chosenRole.slice(1)} registered: ${fullName.trim()} (${trimmedEmail})`
-    ]);
+      // Audit log
+      await txQuery(
+        `INSERT INTO audit_log (log_id, actor_id, action, target, details) VALUES (?, ?, 'USER_REGISTERED', ?, ?)`,
+        [uuidv4(), userId, trimmedEmail, `Student registered: ${fullName.trim()} (${trimmedEmail})`]
+      );
+    });
 
     return res.status(201).json({
       message: 'Account created successfully.',
-      verificationToken,
       userId,
-      role: chosenRole
+      role: assignedRole
     });
   } catch (err) {
     console.error('Registration error:', err);
@@ -184,8 +176,6 @@ async function login(req, res) {
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       const attempts = (user.failed_login_attempts || 0) + 1;
-      let lockoutSql = '';
-      const params = [attempts];
 
       if (attempts >= 5) {
         const lockUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
@@ -207,7 +197,7 @@ async function login(req, res) {
 
     // Reset failed login attempts and update last_login
     await query(
-      "UPDATE users SET failed_login_attempts = 0, lockout_until = NULL, last_login = datetime('now') WHERE user_id = ?",
+      "UPDATE users SET failed_login_attempts = 0, lockout_until = NULL, last_login = CURRENT_TIMESTAMP WHERE user_id = ?",
       [user.user_id]
     );
 
@@ -244,6 +234,13 @@ async function login(req, res) {
 }
 
 // POST /api/auth/forgot-password
+// CHANGE 1: Fix password-reset token exposure
+// - Return generic success message regardless of whether email exists (prevent account enumeration).
+// - NEVER return reset token or log it.
+// - Cryptographically secure token generated with crypto.randomBytes(32).
+// - Store only SHA-256 hash of token in database.
+// - Short expiry: 15-30 minutes.
+// - Single-use token.
 async function forgotPassword(req, res) {
   try {
     const { email } = req.body;
@@ -253,22 +250,34 @@ async function forgotPassword(req, res) {
 
     const trimmedEmail = email.trim().toLowerCase();
     const userRes = await query('SELECT user_id FROM users WHERE email = ?', [trimmedEmail]);
-    
-    // Always return polite message to avoid email enumeration
-    const resetToken = uuidv4();
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 mins as per doc
 
     if (userRes.rowCount > 0) {
+      // Cryptographically secure random token (32 bytes = 64 hex chars)
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = hashToken(rawToken);
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 minutes
+
+      // Invalidate existing outstanding reset tokens for this email
+      await query('DELETE FROM password_resets WHERE email = ?', [trimmedEmail]);
+
+      // Store only the token hash
       await query('INSERT INTO password_resets (token, email, expires_at) VALUES (?, ?, ?)', [
-        resetToken,
+        tokenHash,
         trimmedEmail,
         expiresAt
       ]);
+
+      // In production, an email would be dispatched here via configured SMTP.
+      // Reset URLs must be constructed from validated frontend URL only.
+      // Under NO circumstances is rawToken or tokenHash returned in the HTTP response or logs.
+      if (process.env.NODE_ENV === 'test_captured_sink') {
+        // Intentionally left for controlled local test sinks only if needed
+      }
     }
 
+    // Always return generic success message to prevent account enumeration
     return res.json({
-      message: `If an account with ${trimmedEmail} exists, a password reset link has been issued (valid 30 minutes).`,
-      resetToken // provided for testing
+      message: 'If an account associated with this email exists, a password reset link has been dispatched.'
     });
   } catch (err) {
     console.error('Forgot password error:', err);
@@ -277,6 +286,11 @@ async function forgotPassword(req, res) {
 }
 
 // POST /api/auth/reset-password
+// CHANGE 1:
+// - Validate token hash from database
+// - Single-use: immediately delete token upon successful reset
+// - Update password securely using strong bcrypt hash
+// - Reset lockout counters
 async function resetPassword(req, res) {
   try {
     const { token, newPassword } = req.body;
@@ -288,28 +302,118 @@ async function resetPassword(req, res) {
       return res.status(400).json({ error: 'Password must be at least 8 characters long and contain at least one letter and one number.' });
     }
 
-    const resetRes = await query('SELECT * FROM password_resets WHERE token = ?', [token]);
-    if (resetRes.rowCount === 0) {
-      return res.status(400).json({ error: 'Invalid or expired password reset link.' });
+    const tokenHash = hashToken(token.trim());
+
+    // Atomic transaction: Find, validate, consume token, and update password
+    const resetSuccess = await withTransaction(async (txQuery) => {
+      const resetRes = await txQuery('SELECT * FROM password_resets WHERE token = ?', [tokenHash]);
+      if (resetRes.rowCount === 0) {
+        return { error: 'Invalid or expired password reset link.', status: 400 };
+      }
+
+      const resetRecord = resetRes.rows[0];
+      if (new Date(resetRecord.expires_at) < new Date()) {
+        // Cleanup expired token
+        await txQuery('DELETE FROM password_resets WHERE token = ?', [tokenHash]);
+        return { error: 'This password reset link has expired.', status: 400 };
+      }
+
+      const newHash = await bcrypt.hash(newPassword, 10);
+      await txQuery(
+        'UPDATE users SET password_hash = ?, failed_login_attempts = 0, lockout_until = NULL WHERE email = ?',
+        [newHash, resetRecord.email]
+      );
+
+      // Invalidate all tokens for this email to prevent reuse or replay
+      await txQuery('DELETE FROM password_resets WHERE email = ?', [resetRecord.email]);
+
+      return { success: true };
+    });
+
+    if (resetSuccess.error) {
+      return res.status(resetSuccess.status || 400).json({ error: resetSuccess.error });
     }
-
-    const resetRecord = resetRes.rows[0];
-    if (new Date(resetRecord.expires_at) < new Date()) {
-      return res.status(400).json({ error: 'This password reset link has expired.' });
-    }
-
-    const newHash = await bcrypt.hash(newPassword, 10);
-    await query('UPDATE users SET password_hash = ?, failed_login_attempts = 0, lockout_until = NULL WHERE email = ?', [
-      newHash,
-      resetRecord.email
-    ]);
-
-    await query('DELETE FROM password_resets WHERE token = ?', [token]);
 
     return res.json({ message: 'Your password has been reset successfully. You can now log in.' });
   } catch (err) {
     console.error('Reset password error:', err);
     return res.status(500).json({ error: 'Could not reset password.' });
+  }
+}
+
+// POST /api/auth/verify-email
+// CHANGE 4: Token-based email verification endpoint
+async function verifyEmail(req, res) {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: 'Verification token is required.' });
+    }
+
+    const tokenHash = hashToken(token.trim());
+
+    const result = await withTransaction(async (txQuery) => {
+      const verifyRes = await txQuery('SELECT * FROM email_verifications WHERE token = ?', [tokenHash]);
+      if (verifyRes.rowCount === 0) {
+        return { error: 'Invalid or expired verification token.', status: 400 };
+      }
+
+      const record = verifyRes.rows[0];
+      if (new Date(record.expires_at) < new Date()) {
+        await txQuery('DELETE FROM email_verifications WHERE token = ?', [tokenHash]);
+        return { error: 'This verification token has expired.', status: 400 };
+      }
+
+      // Mark user as verified
+      await txQuery('UPDATE users SET email_verified = 1 WHERE email = ?', [record.email]);
+      // Invalidate token
+      await txQuery('DELETE FROM email_verifications WHERE token = ?', [tokenHash]);
+
+      return { success: true, email: record.email };
+    });
+
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+
+    return res.json({ message: 'Email verified successfully. You can now access all features.' });
+  } catch (err) {
+    console.error('verifyEmail error:', err);
+    return res.status(500).json({ error: 'Failed to verify email.' });
+  }
+}
+
+// POST /api/auth/resend-verification
+async function resendVerification(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email address is required.' });
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    const userRes = await query('SELECT user_id, email_verified FROM users WHERE email = ?', [trimmedEmail]);
+
+    if (userRes.rowCount > 0 && userRes.rows[0].email_verified === 0) {
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = hashToken(rawToken);
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+      await query('DELETE FROM email_verifications WHERE email = ?', [trimmedEmail]);
+      await query('INSERT INTO email_verifications (token, email, expires_at) VALUES (?, ?, ?)', [
+        tokenHash,
+        trimmedEmail,
+        expiresAt
+      ]);
+    }
+
+    // Generic response to avoid enumeration
+    return res.json({
+      message: 'If the account exists and requires verification, a link has been dispatched.'
+    });
+  } catch (err) {
+    console.error('resendVerification error:', err);
+    return res.status(500).json({ error: 'Could not process request.' });
   }
 }
 
@@ -355,5 +459,8 @@ module.exports = {
   login,
   forgotPassword,
   resetPassword,
-  getMe
+  verifyEmail,
+  resendVerification,
+  getMe,
+  hashToken
 };
