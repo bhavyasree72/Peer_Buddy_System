@@ -267,12 +267,9 @@ async function forgotPassword(req, res) {
         expiresAt
       ]);
 
-      // In production, an email would be dispatched here via configured SMTP.
-      // Reset URLs must be constructed from validated frontend URL only.
-      // Under NO circumstances is rawToken or tokenHash returned in the HTTP response or logs.
-      if (process.env.NODE_ENV === 'test_captured_sink') {
-        // Intentionally left for controlled local test sinks only if needed
-      }
+      // Dispatch reset email asynchronously
+      const { sendPasswordResetEmail } = require('../utils/emailService');
+      await sendPasswordResetEmail(trimmedEmail, rawToken);
     }
 
     // Always return generic success message to prevent account enumeration

@@ -138,6 +138,48 @@ export default function AuthPage({ onLoginSuccess }) {
     }
   }
 
+  const [resetToken, setResetToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [resetMode, setResetMode] = useState(false);
+
+  useEffect(() => {
+    // Check if URL has #reset-password or token query parameter
+    const hash = window.location.hash || '';
+    if (hash.includes('reset-password')) {
+      const urlParams = new URLSearchParams(hash.split('?')[1] || window.location.search);
+      const token = urlParams.get('token');
+      if (token) {
+        setResetToken(token);
+        setResetMode(true);
+      }
+    }
+  }, []);
+
+  async function handleResetPassword(e) {
+    e.preventDefault();
+    if (!newPassword || !confirmNewPassword) {
+      setError('Please provide and confirm your new password.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const res = await api.resetPassword({ token: resetToken, newPassword });
+      setMessage(res.message);
+      setResetMode(false);
+      window.location.hash = '';
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleForgotPassword(e) {
     e.preventDefault();
     if (!email) {
@@ -268,7 +310,40 @@ export default function AuthPage({ onLoginSuccess }) {
             </div>
           )}
 
-          {forgotMode ? (
+          {resetMode ? (
+            <form onSubmit={handleResetPassword}>
+              <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>Create new password</h2>
+              <p style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: '20px' }}>
+                Enter your new password below. It must be at least 8 characters and contain at least one letter and one number.
+              </p>
+              <div style={{ marginBottom: '16px' }}>
+                <label>New Password</label>
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <div style={{ marginBottom: '20px' }}>
+                <label>Confirm New Password</label>
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <button type="submit" className="btn-primary" style={{ width: '100%', marginBottom: '12px' }} disabled={loading}>
+                {loading ? 'Updating password...' : 'Update Password'}
+              </button>
+              <button type="button" className="btn-secondary" style={{ width: '100%' }} onClick={() => { setResetMode(false); window.location.hash = ''; }}>
+                Back to login
+              </button>
+            </form>
+          ) : forgotMode ? (
             <form onSubmit={handleForgotPassword}>
               <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>Reset your password</h2>
               <p style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: '20px' }}>
