@@ -121,6 +121,10 @@ async function register(req, res) {
       );
     });
 
+    // Send confirmation welcome email asynchronously
+    const { sendWelcomeEmail } = require('../utils/emailService');
+    await sendWelcomeEmail(trimmedEmail, fullName.trim(), assignedRole).catch(e => console.error(e));
+
     return res.status(201).json({
       message: 'Account created successfully.',
       userId,
@@ -402,6 +406,9 @@ async function resendVerification(req, res) {
         trimmedEmail,
         expiresAt
       ]);
+
+      const { sendVerificationEmail } = require('../utils/emailService');
+      await sendVerificationEmail(trimmedEmail, rawToken).catch(e => console.error(e));
     }
 
     // Generic response to avoid enumeration
