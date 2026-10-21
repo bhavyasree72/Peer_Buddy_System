@@ -1,146 +1,238 @@
+const { Resend } = require('resend');
 const nodemailer = require('nodemailer');
 
-// Configure mail transporter
-function getTransporter() {
-  if (process.env.SMTP_HOST && process.env.SMTP_USER) {
-    return nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || '587', 10),
-      secure: process.env.SMTP_SECURE === 'true', // true for 465, false for 587
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
-      }
-    });
+// 1. Initialize Resend client if RESEND_API_KEY is configured
+let resendClient = null;
+function getResendClient() {
+  if (process.env.RESEND_API_KEY && !resendClient) {
+    resendClient = new Resend(process.env.RESEND_API_KEY);
   }
+  return resendClient;
+}
 
+// 2. Fallback SMTP transporter if SMTP_HOST is configured
+let smtpTransporter = null;
+function getSmtpTransporter() {
+  if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+    if (!smtpTransporter) {
+      smtpTransporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || '587', 10),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS
+        }
+      });
+    }
+    return smtpTransporter;
+  }
   return null;
 }
 
-// 1. Password Reset Email
+function getSender() {
+  // If user configured EMAIL_FROM, use that; otherwise default to a verified sender
+  // Resend default onboarding sender is 'onboarding@resend.dev' if custom domain is not yet verified
+  if (process.env.EMAIL_FROM) {
+    return process.env.EMAIL_FROM;
+  }
+  if (process.env.RESEND_API_KEY) {
+    return 'NMIMS Peer Buddy <onboarding@resend.dev>';
+  }
+  return 'NMIMS Peer Buddy <no-reply@nmims.in>';
+}
+
+function getFrontendUrl() {
+  let url = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'https://peer-buddy-app.vercel.app';
+  if (url.endsWith('/')) {
+    url = url.slice(0, -1);
+  }
+  return url;
+}
+
+/**
+ * Core send helper: Try Resend first, then SMTP fallback, then dev log
+ */
+async function sendEmail({ to, subject, html, text }) {
+  const sender = getSender();
+  const resend = getResendClient();
+
+  // Mode A: Resend API
+  if (resend) {
+    try {
+      const response = await resend.emails.send({
+        from: sender,
+        to: [to],
+        subject,
+        html,
+        text: text || ''
+      });
+
+      if (response.error) {
+        console.error('[Email Service] Resend error:', response.error.message || response.error);
+        return { sent: false, error: response.error.message || 'Resend delivery failed' };
+      }
+
+      console.log(`[Email Service] Dispatched via Resend to ${to} (id: ${response.data ? response.data.id : 'ok'})`);
+      return { sent: true, provider: 'resend', id: response.data ? response.data.id : null };
+    } catch (err) {
+      console.error('[Email Service] Resend exception:', err.message);
+      return { sent: false, error: err.message };
+    }
+  }
+
+  // Mode B: SMTP Transporter (Office 365 / Gmail)
+  const smtp = getSmtpTransporter();
+  if (smtp) {
+    try {
+      const info = await smtp.sendMail({
+        from: sender,
+        to,
+        subject,
+        html,
+        text
+      });
+      console.log(`[Email Service] Dispatched via SMTP to ${to} (id: ${info.messageId})`);
+      return { sent: true, provider: 'smtp', id: info.messageId };
+    } catch (err) {
+      console.error('[Email Service] SMTP exception:', err.message);
+      return { sent: false, error: err.message };
+    }
+  }
+
+  // Mode C: Development Logger (When no keys configured)
+  console.log('\n====================================================================');
+  console.log(' [EMAIL SERVICE DEV LOG — No RESEND_API_KEY or SMTP configured]');
+  console.log(` Recipient : ${to}`);
+  console.log(` Subject   : ${subject}`);
+  console.log('====================================================================\n');
+  return { sent: false, error: 'No email provider configured (set RESEND_API_KEY or SMTP_HOST)' };
+}
+
+/**
+ * 1. Send Password Reset Email
+ */
 async function sendPasswordResetEmail(toEmail, rawToken) {
-  const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:3000';
+  const frontendUrl = getFrontendUrl();
   const resetLink = `${frontendUrl}#reset-password?token=${rawToken}&email=${encodeURIComponent(toEmail)}`;
 
-  const transporter = getTransporter();
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 28px; border: 1px solid #E5E7EB; border-radius: 10px; background-color: #ffffff;">
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #E4574C; margin: 0; font-size: 22px; font-weight: 700;">NMIMS Peer Buddy System</h2>
+        <span style="font-size: 13px; color: #6B7280;">Secure Password Reset</span>
+      </div>
+      
+      <p style="font-size: 15px; color: #1F2937; line-height: 1.5;">Hello,</p>
+      <p style="font-size: 15px; color: #374151; line-height: 1.5;">We received a request to reset the password for your account associated with <strong>${toEmail}</strong>.</p>
+      
+      <div style="margin: 32px 0; text-align: center;">
+        <a href="${resetLink}" style="background-color: #E4574C; color: #FFFFFF; padding: 13px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 15px; display: inline-block; box-shadow: 0 2px 4px rgba(228,87,76,0.2);">Reset Your Password</a>
+      </div>
 
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || `"NMIMS Peer Buddy" <${process.env.SMTP_USER}>`,
-        to: toEmail,
-        subject: 'NMIMS Peer Buddy — Password Reset Request',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #E5E7EB; border-radius: 8px;">
-            <h2 style="color: #E4574C; margin-top: 0;">NMIMS Peer Buddy System</h2>
-            <p style="font-size: 15px; color: #374151;">Hello,</p>
-            <p style="font-size: 15px; color: #374151;">We received a request to reset your password for your NMIMS Peer Buddy account.</p>
-            <div style="margin: 28px 0; text-align: center;">
-              <a href="${resetLink}" style="background-color: #E4574C; color: #FFFFFF; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 15px; display: inline-block;">Reset Password</a>
-            </div>
-            <p style="color: #6B7280; font-size: 14px;">This link will expire in 30 minutes and can only be used once.</p>
-            <p style="color: #6B7280; font-size: 14px;">If you didn't request this, you can safely ignore this email.</p>
-            <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
-            <p style="color: #9CA3AF; font-size: 12px;">Or copy and paste this link in your browser:<br/><a href="${resetLink}" style="color: #E4574C;">${resetLink}</a></p>
-          </div>
-        `
-      });
-      console.log(`[Email] Password reset email dispatched via SMTP to ${toEmail}`);
-      return { sent: true };
-    } catch (err) {
-      console.error('[Email] SMTP send failed:', err.message);
-      return { sent: false, error: err.message };
-    }
-  } else {
-    console.log('\n====================================================================');
-    console.log(' [DEVELOPMENT MODE / NO SMTP CONFIGURED]');
-    console.log(` Recipient: ${toEmail}`);
-    console.log(` Password Reset Link: ${resetLink}`);
-    console.log('====================================================================\n');
-    return { sent: false, devLink: resetLink };
-  }
+      <p style="color: #4B5563; font-size: 14px; line-height: 1.5;">
+        • This link will expire in <strong>30 minutes</strong>.<br/>
+        • This link is single-use and will be invalidated after resetting.
+      </p>
+
+      <p style="color: #6B7280; font-size: 13px; margin-top: 24px;">If you did not request a password reset, you can safely ignore this email; your account remains secure.</p>
+      
+      <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
+      
+      <p style="color: #9CA3AF; font-size: 12px; line-height: 1.4;">
+        If the button above does not work, copy and paste this link into your browser:<br/>
+        <a href="${resetLink}" style="color: #E4574C; word-break: break-all;">${resetLink}</a>
+      </p>
+    </div>
+  `;
+
+  return sendEmail({
+    to: toEmail,
+    subject: 'NMIMS Peer Buddy — Password Reset Link',
+    html,
+    text: `Reset your NMIMS Peer Buddy password: ${resetLink} (Link valid for 30 minutes)`
+  });
 }
 
-// 2. Account Registration Confirmation Email
+/**
+ * 2. Send Registration / Welcome Email
+ */
 async function sendWelcomeEmail(toEmail, fullName, role) {
-  const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:3000';
+  const frontendUrl = getFrontendUrl();
   const loginLink = `${frontendUrl}#login`;
 
-  const transporter = getTransporter();
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 28px; border: 1px solid #E5E7EB; border-radius: 10px; background-color: #ffffff;">
+      <div style="margin-bottom: 24px;">
+        <h2 style="color: #E4574C; margin: 0; font-size: 22px; font-weight: 700;">Welcome to NMIMS Peer Buddy!</h2>
+        <span style="font-size: 13px; color: #6B7280;">Student Peer Collaboration & Mentorship</span>
+      </div>
 
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || `"NMIMS Peer Buddy" <${process.env.SMTP_USER}>`,
-        to: toEmail,
-        subject: 'Welcome to NMIMS Peer Buddy System — Account Created Successfully',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #E5E7EB; border-radius: 8px;">
-            <h2 style="color: #E4574C; margin-top: 0;">Welcome to NMIMS Peer Buddy!</h2>
-            <p style="font-size: 15px; color: #374151;">Dear <strong>${fullName}</strong>,</p>
-            <p style="font-size: 15px; color: #374151;">Your <strong>${role.charAt(0).toUpperCase() + role.slice(1)}</strong> account has been created successfully.</p>
-            <p style="font-size: 15px; color: #374151;">You can now log in to discover peer buddies, book study sessions, access learning resources, and connect with mentors across NMIMS.</p>
-            <div style="margin: 28px 0; text-align: center;">
-              <a href="${loginLink}" style="background-color: #E4574C; color: #FFFFFF; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 15px; display: inline-block;">Go to NMIMS Peer Buddy</a>
-            </div>
-            <p style="color: #6B7280; font-size: 13px;">Registered Email: <strong>${toEmail}</strong></p>
-            <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
-            <p style="color: #9CA3AF; font-size: 12px;">NMIMS Intra-College Collaboration Platform</p>
-          </div>
-        `
-      });
-      console.log(`[Email] Welcome email dispatched via SMTP to ${toEmail}`);
-      return { sent: true };
-    } catch (err) {
-      console.error('[Email] SMTP welcome send failed:', err.message);
-      return { sent: false, error: err.message };
-    }
-  } else {
-    console.log(`[Email Dev] Welcome email logged for ${toEmail} (${fullName})`);
-    return { sent: false };
-  }
+      <p style="font-size: 15px; color: #1F2937; line-height: 1.5;">Dear <strong>${fullName}</strong>,</p>
+      <p style="font-size: 15px; color: #374151; line-height: 1.5;">Your <strong>${role.charAt(0).toUpperCase() + role.slice(1)}</strong> account has been created successfully.</p>
+      
+      <p style="font-size: 14px; color: #4B5563; line-height: 1.6;">
+        You can now sign in to:
+        <ul style="margin: 8px 0; padding-left: 20px;">
+          <li>Search and connect with peer study buddies by school, program, and skills</li>
+          <li>Schedule and manage interactive study sessions</li>
+          <li>Access curated academic resources and faculty announcements</li>
+          <li>Connect with designated mentors for guidance</li>
+        </ul>
+      </p>
+
+      <div style="margin: 30px 0; text-align: center;">
+        <a href="${loginLink}" style="background-color: #E4574C; color: #FFFFFF; padding: 13px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 15px; display: inline-block;">Log In to Peer Buddy</a>
+      </div>
+
+      <p style="color: #6B7280; font-size: 13px;">Registered Email ID: <strong>${toEmail}</strong></p>
+      
+      <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
+      <p style="color: #9CA3AF; font-size: 12px; margin: 0;">NMIMS Intra-College Collaboration Platform</p>
+    </div>
+  `;
+
+  return sendEmail({
+    to: toEmail,
+    subject: 'Welcome to NMIMS Peer Buddy System — Account Registered',
+    html,
+    text: `Welcome to NMIMS Peer Buddy, ${fullName}! Your ${role} account has been created. Log in at ${loginLink}`
+  });
 }
 
-// 3. Email Verification Link Email
+/**
+ * 3. Send Email Verification Link
+ */
 async function sendVerificationEmail(toEmail, rawToken) {
-  const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:3000';
+  const frontendUrl = getFrontendUrl();
   const verifyLink = `${frontendUrl}#verify-email?token=${rawToken}&email=${encodeURIComponent(toEmail)}`;
 
-  const transporter = getTransporter();
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 28px; border: 1px solid #E5E7EB; border-radius: 10px; background-color: #ffffff;">
+      <h2 style="color: #E4574C; margin-top: 0; font-size: 22px;">NMIMS Peer Buddy System</h2>
+      <p style="font-size: 15px; color: #374151;">Hello,</p>
+      <p style="font-size: 15px; color: #374151;">Please confirm your NMIMS email address by clicking the button below:</p>
+      
+      <div style="margin: 28px 0; text-align: center;">
+        <a href="${verifyLink}" style="background-color: #E4574C; color: #FFFFFF; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 15px; display: inline-block;">Verify Email Address</a>
+      </div>
+      
+      <p style="color: #6B7280; font-size: 14px;">This link will expire in 24 hours.</p>
+      <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
+      <p style="color: #9CA3AF; font-size: 12px;">Link: <a href="${verifyLink}" style="color: #E4574C;">${verifyLink}</a></p>
+    </div>
+  `;
 
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || `"NMIMS Peer Buddy" <${process.env.SMTP_USER}>`,
-        to: toEmail,
-        subject: 'Verify Your NMIMS Peer Buddy Email',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #E5E7EB; border-radius: 8px;">
-            <h2 style="color: #E4574C; margin-top: 0;">NMIMS Peer Buddy System</h2>
-            <p style="font-size: 15px; color: #374151;">Hello,</p>
-            <p style="font-size: 15px; color: #374151;">Please confirm your NMIMS email address by clicking the link below:</p>
-            <div style="margin: 28px 0; text-align: center;">
-              <a href="${verifyLink}" style="background-color: #E4574C; color: #FFFFFF; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 15px; display: inline-block;">Verify Email</a>
-            </div>
-            <p style="color: #6B7280; font-size: 14px;">This link is valid for 24 hours.</p>
-            <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 24px 0;" />
-            <p style="color: #9CA3AF; font-size: 12px;">Or copy and paste this link in your browser:<br/><a href="${verifyLink}" style="color: #E4574C;">${verifyLink}</a></p>
-          </div>
-        `
-      });
-      console.log(`[Email] Verification email dispatched to ${toEmail}`);
-      return { sent: true };
-    } catch (err) {
-      console.error('[Email] SMTP verification send failed:', err.message);
-      return { sent: false, error: err.message };
-    }
-  } else {
-    console.log(`[Email Dev] Verification link for ${toEmail}: ${verifyLink}`);
-    return { sent: false, devLink: verifyLink };
-  }
+  return sendEmail({
+    to: toEmail,
+    subject: 'Verify Your NMIMS Peer Buddy Email',
+    html,
+    text: `Verify your NMIMS Peer Buddy email: ${verifyLink}`
+  });
 }
 
 module.exports = {
+  sendEmail,
   sendPasswordResetEmail,
   sendWelcomeEmail,
   sendVerificationEmail

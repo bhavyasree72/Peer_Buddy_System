@@ -490,6 +490,50 @@ async function createUser(req, res) {
   }
 }
 
+// POST /api/admin/email-diagnostic
+// CHANGE 4: Safe admin-only diagnostic test endpoint to test Resend / SMTP live delivery
+async function sendEmailDiagnostic(req, res) {
+  try {
+    const { to } = req.body;
+    if (!to || typeof to !== 'string' || !to.includes('@')) {
+      return res.status(400).json({ error: 'Valid recipient email address is required.' });
+    }
+
+    const { sendEmail } = require('../utils/emailService');
+    const result = await sendEmail({
+      to: to.trim().toLowerCase(),
+      subject: 'NMIMS Peer Buddy — Live Email System Diagnostic Test',
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #E5E7EB; border-radius: 8px;">
+          <h2 style="color: #E4574C;">NMIMS Peer Buddy — Email Service Live</h2>
+          <p>This is a live diagnostic test message sent from the Peer Buddy API.</p>
+          <p><strong>Recipient:</strong> ${to.trim().toLowerCase()}</p>
+          <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>
+          <p style="color: green; font-weight: bold;">✓ Email configuration verified successfully.</p>
+        </div>
+      `,
+      text: `NMIMS Peer Buddy Email Diagnostic Test sent to ${to.trim().toLowerCase()} at ${new Date().toISOString()}`
+    });
+
+    if (result.sent) {
+      return res.json({
+        success: true,
+        message: `Diagnostic email accepted by ${result.provider}.`,
+        provider: result.provider,
+        id: result.id
+      });
+    } else {
+      return res.status(502).json({
+        success: false,
+        error: result.error || 'Failed to deliver diagnostic email'
+      });
+    }
+  } catch (err) {
+    console.error('sendEmailDiagnostic error:', err);
+    return res.status(500).json({ error: err.message || 'Diagnostic execution failed.' });
+  }
+}
+
 module.exports = {
   getAdminDashboard,
   getUsers,
@@ -505,5 +549,6 @@ module.exports = {
   addMasterItem,
   deleteMasterItem,
   getAnnouncements,
-  saveAnnouncement
+  saveAnnouncement,
+  sendEmailDiagnostic
 };

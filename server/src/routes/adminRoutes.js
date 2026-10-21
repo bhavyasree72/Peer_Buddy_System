@@ -20,5 +20,6 @@ router.post('/master-data', adminController.addMasterItem);
 router.delete('/master-data', adminController.deleteMasterItem);
 router.get('/announcements', adminController.getAnnouncements);
 router.post('/announcements', adminController.saveAnnouncement);
+router.post('/email-diagnostic', adminController.sendEmailDiagnostic);
 
 module.exports = router;
