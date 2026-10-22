@@ -3,7 +3,19 @@ const { query } = require('../database/db');
 // GET /api/master/all
 async function getMasterData(req, res) {
   try {
-    const schools = (await query('SELECT * FROM schools ORDER BY name ASC')).rows;
+    const schools = (await query(`
+      SELECT id, name, code, semesters 
+      FROM schools 
+      WHERE UPPER(code) IN ('STME', 'SOL', 'SPTM', 'SBM', 'SOC')
+      ORDER BY CASE UPPER(code)
+        WHEN 'STME' THEN 1
+        WHEN 'SOL' THEN 2
+        WHEN 'SPTM' THEN 3
+        WHEN 'SBM' THEN 4
+        WHEN 'SOC' THEN 5
+        ELSE 6
+      END ASC
+    `)).rows;
     const programs = (await query('SELECT * FROM programs ORDER BY name ASC')).rows;
     const skills = (await query('SELECT * FROM skills WHERE approved = 1 ORDER BY category, name ASC')).rows;
     const interests = (await query('SELECT * FROM interests WHERE approved = 1 ORDER BY category, name ASC')).rows;

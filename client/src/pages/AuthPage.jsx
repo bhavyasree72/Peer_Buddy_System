@@ -65,15 +65,18 @@ export default function AuthPage({ onLoginSuccess }) {
   const [resetMode, setResetMode] = useState(false);
 
   useEffect(() => {
-    // Check if URL has #reset-password or token query parameter
+    // Check if URL has reset-password in search or hash
+    const searchParams = new URLSearchParams(window.location.search);
     const hash = window.location.hash || '';
-    if (hash.includes('reset-password')) {
-      const urlParams = new URLSearchParams(hash.split('?')[1] || window.location.search);
-      const token = urlParams.get('token');
-      if (token) {
-        setResetToken(token);
-        setResetMode(true);
-      }
+    let token = searchParams.get('token');
+    if (!token && hash.includes('token=')) {
+      const hashQuery = hash.includes('?') ? hash.split('?')[1] : hash.replace(/^#/, '');
+      const hashParams = new URLSearchParams(hashQuery);
+      token = hashParams.get('token');
+    }
+    if (token) {
+      setResetToken(token);
+      setResetMode(true);
     }
   }, []);
 
@@ -787,17 +790,17 @@ export default function AuthPage({ onLoginSuccess }) {
                           <option value="" disabled>Select school…</option>
                           {master.schools && master.schools.length > 0 ? (
                             master.schools
-                              .filter(s => ['SOL', 'STME', 'SPTM', 'SOC', 'SBM'].includes((s.code || '').toUpperCase()))
+                              .filter(s => ['STME', 'SOL', 'SPTM', 'SBM', 'SOC'].includes((s.code || '').toUpperCase()))
                               .map(s => (
-                                <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
+                                <option key={s.id} value={s.id}>{s.code} – {s.name.replace(/\s*\([^)]*\)$/, '')}</option>
                               ))
                           ) : (
                             <>
-                              <option value="sch-stme">School of Technology Management and Engineering (STME)</option>
-                              <option value="sch-sptm">School of Pharmacy & Technology Management (SPTM)</option>
-                              <option value="sch-sol">School of Law (SOL)</option>
-                              <option value="sch-sbm">School of Business Management (SBM)</option>
-                              <option value="sch-soc">School of Commerce (SOC)</option>
+                              <option value="sch-stme">STME – School of Technology Management and Engineering</option>
+                              <option value="sch-sol">SOL – School of Law</option>
+                              <option value="sch-sptm">SPTM – School of Pharmacy & Technology Management</option>
+                              <option value="sch-sbm">SBM – School of Business Management</option>
+                              <option value="sch-soc">SOC – School of Commerce</option>
                             </>
                           )}
                         </select>

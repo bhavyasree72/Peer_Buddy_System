@@ -144,8 +144,8 @@ export default function FindBuddies({ onSelectProfile }) {
               >
                 <option value="">All Schools</option>
                 {master.schools && master.schools
-                  .filter(s => ['SOL', 'STME', 'SPTM', 'SOC', 'SBM'].includes((s.code || '').toUpperCase()))
-                  .map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+                  .filter(s => ['STME', 'SOL', 'SPTM', 'SBM', 'SOC'].includes((s.code || '').toUpperCase()))
+                  .map(s => <option key={s.id} value={s.id}>{s.code} – {s.name.replace(/\s*\([^)]*\)$/, '')}</option>)}
               </select>
             </div>
 

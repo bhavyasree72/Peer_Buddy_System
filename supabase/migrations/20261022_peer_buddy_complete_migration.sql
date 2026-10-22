@@ -242,6 +242,15 @@ CREATE TABLE IF NOT EXISTS public.resources (
   uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS public.resource_allocations (
+  allocation_id VARCHAR(64) PRIMARY KEY,
+  resource_id VARCHAR(64) NOT NULL REFERENCES public.resources(resource_id) ON DELETE CASCADE,
+  student_id VARCHAR(64) NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+  allocated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(resource_id, student_id)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_allocations_student ON public.resource_allocations(student_id);
+
 -- 15. Reports & Moderation
 CREATE TABLE IF NOT EXISTS public.reports (
   report_id VARCHAR(64) PRIMARY KEY,

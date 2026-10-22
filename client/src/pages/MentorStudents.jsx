@@ -4,19 +4,16 @@ import { Search, Filter, Eye, Users } from 'lucide-react';
 
 export default function MentorStudents({ user, onSelectProfile }) {
   const [students, setStudents] = useState([]);
-  const [master, setMaster] = useState({ schools: [] });
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState({
     q: '',
-    schoolId: '',
     semester: ''
   });
   const [viewingProfile, setViewingProfile] = useState(null);
 
   useEffect(() => {
-    api.getMasterData().then(m => setMaster(m)).catch(console.error);
     loadStudents();
-  }, [filters.schoolId, filters.semester]);
+  }, [filters.semester]);
 
   async function loadStudents() {
     setLoading(true);
@@ -44,15 +41,12 @@ export default function MentorStudents({ user, onSelectProfile }) {
     }
   }
 
-  const selectedSchoolObj = master.schools ? master.schools.find(s => s.id === filters.schoolId) : null;
-  const maxSemesters = selectedSchoolObj ? (selectedSchoolObj.semesters || 8) : 10;
-
   return (
     <div>
       <div style={{ marginBottom: '24px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '4px' }}>My Students</h1>
         <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>
-          Directory of students under academic mentorship. Filter by school and semester to track progress.
+          Directory of students under your academic mentorship. Filter by semester or search to track student progress.
         </p>
       </div>
 
@@ -70,25 +64,12 @@ export default function MentorStudents({ user, onSelectProfile }) {
         </div>
 
         <select
-          value={filters.schoolId}
-          onChange={(e) => setFilters({ ...filters, schoolId: e.target.value, semester: '' })}
-          style={{ height: '42px', minWidth: '160px' }}
-        >
-          <option value="">All Permitted Schools</option>
-          {master.schools && master.schools
-            .filter(s => ['SOL', 'STME', 'SPTM', 'SOC', 'SBM'].includes((s.code || '').toUpperCase()))
-            .map(s => (
-              <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
-            ))}
-        </select>
-
-        <select
           value={filters.semester}
           onChange={(e) => setFilters({ ...filters, semester: e.target.value })}
-          style={{ height: '42px', minWidth: '140px' }}
+          style={{ height: '42px', minWidth: '150px' }}
         >
           <option value="">All Semesters</option>
-          {Array.from({ length: maxSemesters }, (_, i) => i + 1).map(s => (
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(s => (
             <option key={s} value={s}>Semester {s}</option>
           ))}
         </select>

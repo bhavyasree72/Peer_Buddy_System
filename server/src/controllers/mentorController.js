@@ -279,8 +279,12 @@ async function uploadResource(req, res) {
 }
 
 // GET /api/mentor/resources
+// - Students: ONLY receive resources explicitly allocated/assigned to them via resource_allocations
+// - Staff (Mentor, Faculty, Admin): receive resources uploaded by themselves or available in the catalog
 async function getResources(req, res) {
   try {
+    const userRole = req.user.role;
+    const userId = req.user.userId;
     const { subject, semester, q } = req.query;
 
     let sql = `
@@ -288,9 +292,19 @@ async function getResources(req, res) {
       FROM resources r
       LEFT JOIN student_profiles sp ON r.mentor_id = sp.user_id
       LEFT JOIN staff_profiles stp ON r.mentor_id = stp.user_id
-      WHERE 1=1
     `;
     const params = [];
+
+    if (userRole === 'student') {
+      // Must be explicitly allocated to this student
+      sql += `
+        INNER JOIN resource_allocations ra ON r.resource_id = ra.resource_id
+        WHERE ra.student_id = ?
+      `;
+      params.push(userId);
+    } else {
+      sql += ` WHERE 1=1`;
+    }
 
     if (subject) {
       sql += ' AND LOWER(r.subject) LIKE ?';
@@ -312,6 +326,104 @@ async function getResources(req, res) {
   } catch (err) {
     console.error('getResources error:', err);
     return res.status(500).json({ error: 'Failed to fetch resources.' });
+  }
+}
+
+// POST /api/mentor/resources/:resourceId/allocate
+// Explicitly allocates a resource to specified student(s) or all mentor mentees
+async function allocateResource(req, res) {
+  try {
+    const { resourceId } = req.params;
+    const { studentIds } = req.body; // array of student user_ids
+    const mentorId = req.user.userId;
+
+    const resCheck = await query('SELECT * FROM resources WHERE resource_id = ?', [resourceId]);
+    if (resCheck.rowCount === 0) {
+      return res.status(404).json({ error: 'Resource not found.' });
+    }
+
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({ error: 'Please provide at least one student ID to allocate.' });
+    }
+
+    let allocatedCount = 0;
+    for (const sid of studentIds) {
+      const existing = await query('SELECT allocation_id FROM resource_allocations WHERE resource_id = ? AND student_id = ?', [resourceId, sid]);
+      if (existing.rowCount === 0) {
+        await query(
+          'INSERT INTO resource_allocations (allocation_id, resource_id, student_id, allocated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
+          [uuidv4(), resourceId, sid]
+        );
+        allocatedCount++;
+      }
+    }
+
+    return res.json({
+      message: `Resource successfully allocated to ${allocatedCount} student(s).`,
+      allocatedCount
+    });
+  } catch (err) {
+    console.error('allocateResource error:', err);
+    return res.status(500).json({ error: 'Failed to allocate resource.' });
+  }
+}
+
+// GET /api/mentor/resources/:resourceId/download
+// Secure, authorized download handler
+async function downloadResource(req, res) {
+  try {
+    const { resourceId } = req.params;
+    const userRole = req.user.role;
+    const userId = req.user.userId;
+
+    const resCheck = await query('SELECT * FROM resources WHERE resource_id = ?', [resourceId]);
+    if (resCheck.rowCount === 0) {
+      return res.status(404).json({ error: 'Resource not found.' });
+    }
+
+    const resource = resCheck.rows[0];
+
+    // Authorization check:
+    // If student, must be assigned
+    if (userRole === 'student') {
+      const alloc = await query('SELECT allocation_id FROM resource_allocations WHERE resource_id = ? AND student_id = ?', [resourceId, userId]);
+      if (alloc.rowCount === 0) {
+        return res.status(403).json({ error: 'Access denied. You do not have permission to download this resource.' });
+      }
+    }
+
+    // If external link, return direct redirection or link
+    if (resource.file_url_or_link.startsWith('http://') || resource.file_url_or_link.startsWith('https://')) {
+      return res.redirect(resource.file_url_or_link);
+    }
+
+    // Resolving local uploaded file
+    const filename = path.basename(resource.file_url_or_link);
+    const possiblePaths = [
+      path.resolve(__dirname, '../../../uploads', filename),
+      path.resolve(__dirname, '../../uploads', filename),
+      path.resolve(process.cwd(), 'uploads', filename)
+    ];
+
+    let filePath = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        filePath = p;
+        break;
+      }
+    }
+
+    if (!filePath) {
+      return res.status(404).json({ error: 'File not found on server storage.' });
+    }
+
+    // Download with safe original file name
+    const ext = path.extname(filename) || '.pdf';
+    const safeTitle = resource.title.replace(/[^a-zA-Z0-9_-]/g, '_') + ext;
+    return res.download(filePath, safeTitle);
+  } catch (err) {
+    console.error('downloadResource error:', err);
+    return res.status(500).json({ error: 'Failed to download resource.' });
   }
 }
 
@@ -346,5 +458,7 @@ module.exports = {
   reviewBuddyRequest,
   uploadResource,
   getResources,
+  allocateResource,
+  downloadResource,
   sendGuidanceMessage
 };

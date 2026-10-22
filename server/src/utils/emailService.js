@@ -13,15 +13,24 @@ function getResendClient() {
 // 2. Fallback SMTP transporter if SMTP_HOST is configured
 let smtpTransporter = null;
 function getSmtpTransporter() {
-  if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+  const host = process.env.SMTP_HOST || (process.env.SMTP_SERVICE === 'outlook' ? 'smtp.office365.com' : null);
+  const user = process.env.SMTP_USER || process.env.SMTP_EMAIL;
+  const pass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
+
+  if (host && user && pass) {
     if (!smtpTransporter) {
+      const port = parseInt(process.env.SMTP_PORT || '587', 10);
       smtpTransporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT || '587', 10),
-        secure: process.env.SMTP_SECURE === 'true',
+        host,
+        port,
+        secure: port === 465 || process.env.SMTP_SECURE === 'true',
         auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS
+          user,
+          pass
+        },
+        tls: {
+          ciphers: 'SSLv3',
+          rejectUnauthorized: false
         }
       });
     }
@@ -31,10 +40,12 @@ function getSmtpTransporter() {
 }
 
 function getSender() {
-  // If user configured EMAIL_FROM, use that; otherwise default to a verified sender
-  // Resend default onboarding sender is 'onboarding@resend.dev' if custom domain is not yet verified
   if (process.env.EMAIL_FROM) {
     return process.env.EMAIL_FROM;
+  }
+  const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
+  if (smtpUser) {
+    return `NMIMS Peer Buddy <${smtpUser}>`;
   }
   if (process.env.RESEND_API_KEY) {
     return 'NMIMS Peer Buddy <onboarding@resend.dev>';
@@ -43,7 +54,7 @@ function getSender() {
 }
 
 function getFrontendUrl() {
-  let url = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'https://peer-buddy-app.vercel.app';
+  let url = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'https://peer-buddy-api.onrender.com';
   if (url.endsWith('/')) {
     url = url.slice(0, -1);
   }

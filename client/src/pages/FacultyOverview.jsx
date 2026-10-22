@@ -65,14 +65,6 @@ export default function FacultyOverview({ user }) {
           </div>
         </div>
       </div>
-
-      {/* Quick Navigation Card */}
-      <div className="card">
-        <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>Department Portal</h3>
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.6', margin: 0 }}>
-          Use the left navigation sidebar to browse enrolled department students by program and semester, schedule and review academic study sessions, and access one-to-one private student chat consultations.
-        </p>
-      </div>
     </div>
   );
 }

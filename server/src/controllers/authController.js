@@ -205,14 +205,21 @@ async function register(req, res) {
       // Non-blocking
     }
 
-    // Send confirmation welcome email asynchronously
-    const { sendWelcomeEmail } = require('../utils/emailService');
-    await sendWelcomeEmail(trimmedEmail, fullName.trim(), requestedRole).catch(e => console.error(e));
+    // Send confirmation welcome email
+    let emailDelivery = { sent: false };
+    try {
+      const { sendWelcomeEmail } = require('../utils/emailService');
+      emailDelivery = await sendWelcomeEmail(trimmedEmail, fullName.trim(), requestedRole);
+    } catch (e) {
+      console.error('[Registration] Welcome email failed:', e.message);
+    }
 
     return res.status(201).json({
       message: 'Account created successfully.',
       userId,
-      role: requestedRole
+      role: requestedRole,
+      emailSent: !!emailDelivery.sent,
+      emailProvider: emailDelivery.provider || null
     });
   } catch (err) {
     console.error('Registration error:', err);
@@ -355,9 +362,12 @@ async function forgotPassword(req, res) {
         expiresAt
       ]);
 
-      // Dispatch reset email asynchronously
+      // Dispatch reset email
       const { sendPasswordResetEmail } = require('../utils/emailService');
-      await sendPasswordResetEmail(trimmedEmail, rawToken);
+      const emailRes = await sendPasswordResetEmail(trimmedEmail, rawToken);
+      if (!emailRes.sent) {
+        console.warn(`[Forgot Password] Note: Password reset link created for ${trimmedEmail}, but email sending returned: ${emailRes.error}`);
+      }
     }
 
     // Always return generic success message to prevent account enumeration

@@ -102,6 +102,8 @@ export const api = {
     const query = new URLSearchParams(params).toString();
     return apiRequest(`/mentor/resources?${query}`);
   },
+  allocateResource: (resourceId, studentIds) => apiRequest(`/mentor/resources/${resourceId}/allocate`, 'POST', { studentIds }),
+  downloadResourceUrl: (resourceId) => `/api/mentor/resources/${resourceId}/download`,
   sendGuidance: (data) => apiRequest('/mentor/guidance', 'POST', data),
 
   // Faculty

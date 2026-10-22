@@ -61,6 +61,40 @@ export default function ResourcesPage({ user }) {
     }
   }
 
+  async function handleDownload(resource) {
+    if (resource.file_url_or_link && (resource.file_url_or_link.startsWith('http://') || resource.file_url_or_link.startsWith('https://'))) {
+      window.open(resource.file_url_or_link, '_blank');
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/mentor/resources/${resource.resource_id}/download`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Failed to download resource file.');
+      }
+
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      const safeTitle = (resource.title || 'resource').replace(/[^a-zA-Z0-9_-]/g, '_');
+      link.download = `${safeTitle}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      alert(err.message || 'Download error');
+    }
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
@@ -105,11 +139,14 @@ export default function ResourcesPage({ user }) {
         </button>
       </form>
 
-      {/* Resources Table from doc 7.3 Screen 11: Title, Subject tag, Uploaded by, Date, Download or Open link */}
       {resources.length === 0 ? (
         <div className="empty-state">
-          <h3>No resources uploaded yet</h3>
-          <p>Verified study materials and question sets uploaded by mentors will appear here.</p>
+          <h3>No assigned resources</h3>
+          <p>
+            {user.role === 'student'
+              ? 'No study materials have been assigned to your profile yet. Explicitly allocated guides and notes from your mentor will appear here.'
+              : 'No resources found matching your filter criteria. Use "Upload resource" to publish and allocate materials.'}
+          </p>
         </div>
       ) : (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -148,16 +185,15 @@ export default function ResourcesPage({ user }) {
                     {new Date(r.uploaded_at).toLocaleDateString()}
                   </td>
                   <td style={{ padding: '14px 16px', textAlign: 'right' }}>
-                    <a
-                      href={r.file_url_or_link}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(r)}
                       className="btn-secondary"
-                      style={{ minHeight: '34px', fontSize: '13px', padding: '0 10px', display: 'inline-flex' }}
+                      style={{ minHeight: '34px', fontSize: '13px', padding: '0 10px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                     >
-                      {r.file_url_or_link.startsWith('http') ? <ExternalLink size={14} /> : <Download size={14} />}
-                      {r.file_url_or_link.startsWith('http') ? 'Open link' : 'Download'}
-                    </a>
+                      {r.file_url_or_link && r.file_url_or_link.startsWith('http') ? <ExternalLink size={14} /> : <Download size={14} />}
+                      {r.file_url_or_link && r.file_url_or_link.startsWith('http') ? 'Open link' : 'Download'}
+                    </button>
                   </td>
                 </tr>
               ))}

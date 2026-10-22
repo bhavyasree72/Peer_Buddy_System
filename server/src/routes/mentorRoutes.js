@@ -13,7 +13,10 @@ router.get('/review-requests', verifyToken, requireRole('mentor', 'admin'), ment
 router.get('/my-students', verifyToken, requireRole('mentor', 'admin'), mentorController.getMyStudents);
 router.get('/messages', verifyToken, requireRole('mentor', 'admin'), mentorController.getMentorMessages);
 router.post('/reviews/:requestId', verifyToken, requireRole('mentor', 'admin'), mentorController.reviewBuddyRequest);
+// Resource Management & Downloads
 router.post('/resources/upload', verifyToken, requireRole('mentor', 'admin', 'faculty'), upload.single('file'), mentorController.uploadResource);
+router.post('/resources/:resourceId/allocate', verifyToken, requireRole('mentor', 'admin', 'faculty'), mentorController.allocateResource);
+router.get('/resources/:resourceId/download', verifyToken, mentorController.downloadResource);
 router.post('/guidance', verifyToken, requireRole('mentor', 'admin'), mentorController.sendGuidanceMessage);
 
 module.exports = router;

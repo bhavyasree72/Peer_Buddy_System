@@ -229,6 +229,15 @@ CREATE TABLE IF NOT EXISTS resources (
   uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS resource_allocations (
+  allocation_id VARCHAR(64) PRIMARY KEY,
+  resource_id VARCHAR(64) NOT NULL REFERENCES resources(resource_id) ON DELETE CASCADE,
+  student_id VARCHAR(64) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  allocated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(resource_id, student_id)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_allocations_student ON resource_allocations(student_id);
+
 -- 16. Notifications
 CREATE TABLE IF NOT EXISTS notifications (
   notification_id VARCHAR(64) PRIMARY KEY,

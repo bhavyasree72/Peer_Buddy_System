@@ -7,23 +7,17 @@ export default function FacultyStudents({ user, onNavigateChat }) {
   const [master, setMaster] = useState({ programs: [], schools: [] });
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
-  const [selectedProgram, setSelectedProgram] = useState('');
   const [selectedSemester, setSelectedSemester] = useState('');
   const [viewingProfile, setViewingProfile] = useState(null);
 
   useEffect(() => {
-    api.getMasterData().then(m => setMaster(m)).catch(console.error);
-  }, []);
-
-  useEffect(() => {
     loadStudents();
-  }, [selectedProgram, selectedSemester]);
+  }, [selectedSemester]);
 
   async function loadStudents() {
     setLoading(true);
     try {
       const res = await api.getFacultyStudents({
-        programId: selectedProgram,
         semester: selectedSemester,
         q: search
       });
@@ -40,11 +34,6 @@ export default function FacultyStudents({ user, onNavigateChat }) {
     loadStudents();
   }
 
-  function handleProgramChange(e) {
-    setSelectedProgram(e.target.value);
-    setSelectedSemester(''); // Reset semester when program changes as requested
-  }
-
   async function handleOpenProfile(userId) {
     try {
       const prof = await api.getProfile(userId);
@@ -54,21 +43,16 @@ export default function FacultyStudents({ user, onNavigateChat }) {
     }
   }
 
-  // Determine allowed semesters based on selected program and school
-  const programObj = master.programs ? master.programs.find(p => p.id === selectedProgram || p.code === selectedProgram) : null;
-  const schoolObj = programObj && master.schools ? master.schools.find(s => s.id === programObj.school_id) : null;
-  const maxSemesters = schoolObj ? (schoolObj.semesters || 8) : 8;
-
   return (
     <div>
       <div style={{ marginBottom: '24px' }}>
         <h1 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '4px' }}>Department Students</h1>
         <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>
-          Filter students by program and dependent semester to view profiles and collaboration activity.
+          Browse students by semester and search queries to inspect profiles and academic collaboration activity.
         </p>
       </div>
 
-      {/* Program and Dependent Semester Filter Bar */}
+      {/* Semester and Search Filter Bar */}
       <form onSubmit={handleSearch} style={{ display: 'flex', gap: '12px', marginBottom: '24px', flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: '220px' }}>
           <Search size={18} color="var(--text-muted)" style={{ position: 'absolute', left: '12px', top: '13px' }} />
@@ -81,28 +65,14 @@ export default function FacultyStudents({ user, onNavigateChat }) {
           />
         </div>
 
-        {/* Program Dropdown */}
-        <select
-          value={selectedProgram}
-          onChange={handleProgramChange}
-          style={{ height: '42px', minWidth: '200px' }}
-        >
-          <option value="">All Programs</option>
-          {master.programs && master.programs.map(p => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.code})
-            </option>
-          ))}
-        </select>
-
-        {/* Dependent Semester Dropdown */}
+        {/* Semester Dropdown */}
         <select
           value={selectedSemester}
           onChange={(e) => setSelectedSemester(e.target.value)}
-          style={{ height: '42px', minWidth: '150px' }}
+          style={{ height: '42px', minWidth: '160px' }}
         >
           <option value="">All Semesters</option>
-          {Array.from({ length: maxSemesters }, (_, i) => i + 1).map(s => (
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(s => (
             <option key={s} value={s}>Semester {s}</option>
           ))}
         </select>
