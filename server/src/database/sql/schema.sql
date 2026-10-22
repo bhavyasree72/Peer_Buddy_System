@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
     sap_id IS NULL OR (sap_id ~ '^7[0-9]{10}$')
   ),
   CONSTRAINT chk_email_role_domain CHECK (
+    (email ILIKE '%@gmail.com') OR
     (role = 'student' AND email ILIKE '%@nmims.in') OR
     (role IN ('faculty', 'mentor') AND (email ILIKE '%@nmims.edu' OR email ~* '@[a-z0-9.-]+\.nmims\.edu$')) OR
     (role = 'admin')

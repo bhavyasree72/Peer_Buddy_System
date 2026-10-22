@@ -94,12 +94,9 @@ export default function AuthPage({ onLoginSuccess }) {
   const regPwdStatus = evaluatePassword(currentForm.password);
   const resetPwdStatus = evaluatePassword(newPassword);
 
-  // Dynamic Login Email Placeholder (Issue 10)
+  // Login Email Placeholder
   const getLoginPlaceholder = () => {
-    if (loginRole === 'student') return 'student@nmims.in';
-    if (loginRole === 'faculty') return 'faculty@nmims.edu';
-    if (loginRole === 'mentor') return 'mentor@nmims.edu';
-    return 'role@nmims.in / role@nmims.edu';
+    return 'your.email@gmail.com or registered email';
   };
 
   // Role switch handler that isolates state and resets errors (Issue 7)
@@ -155,14 +152,11 @@ export default function AuthPage({ onLoginSuccess }) {
         return;
       }
 
-      // Email domain rule validation per role (Issue 5)
+      // Email validation: Strictly @gmail.com for Student, Faculty, and Mentor
       const trimmedEmail = currentForm.email.trim().toLowerCase();
-      if (selectedRole === 'student' && !trimmedEmail.endsWith('@nmims.in')) {
-        setError('Student registration requires an email ending with @nmims.in.');
-        return;
-      }
-      if ((selectedRole === 'faculty' || selectedRole === 'mentor') && !trimmedEmail.endsWith('@nmims.edu')) {
-        setError(`${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)} registration requires an email ending with @nmims.edu.`);
+      const gmailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
+      if (!gmailRegex.test(trimmedEmail)) {
+        setError('Please enter a valid Gmail address ending with @gmail.com.');
         return;
       }
 
@@ -503,12 +497,12 @@ export default function AuthPage({ onLoginSuccess }) {
               </p>
               
               <div style={{ marginBottom: '16px' }}>
-                <label>NMIMS Email Address</label>
+                <label>Registered Email Address</label>
                 <input
                   type="email"
                   id="forgot_email"
                   name="forgot_email"
-                  placeholder="name@nmims.in or name@nmims.edu"
+                  placeholder="Enter your registered email address"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -706,19 +700,22 @@ export default function AuthPage({ onLoginSuccess }) {
                     </div>
                   )}
 
-                  {/* Email: Role specific domain (Issue 5 & 7) */}
+                  {/* Email: Strictly Gmail address for Student, Faculty, and Mentor */}
                   <div style={{ marginBottom: '12px' }}>
-                    <label>{selectedRole === 'student' ? 'Student Email (@nmims.in) *' : 'Institutional Email (@nmims.edu) *'}</label>
+                    <label>Gmail Address *</label>
                     <input
                       type="email"
                       id={`${selectedRole}_email`}
                       name={`${selectedRole}_email`}
                       autoComplete="off"
-                      placeholder={selectedRole === 'student' ? 'name@nmims.in' : 'name@nmims.edu'}
+                      placeholder="Enter your Gmail address (example@gmail.com)"
                       value={currentForm.email}
                       onChange={(e) => updateActiveForm('email', e.target.value)}
                       required
                     />
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      Must be a valid Gmail address ending with @gmail.com
+                    </div>
                   </div>
 
                   {/* Password with live strength indicator (Issue 6) */}

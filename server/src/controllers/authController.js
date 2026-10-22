@@ -14,13 +14,9 @@ const { generateTokens } = require('../middleware/auth');
 function isValidRoleEmail(email, role) {
   if (!email || typeof email !== 'string') return false;
   const lower = email.trim().toLowerCase();
-  if (role === 'student') {
-    return lower.endsWith('@nmims.in');
-  }
-  if (role === 'faculty' || role === 'mentor') {
-    return lower.endsWith('@nmims.edu') || /@[\w.-]*nmims\.edu$/i.test(lower);
-  }
-  return false;
+  // Registration strictly requires valid @gmail.com address for student, faculty, and mentor
+  // Strict regex: username followed exactly by @gmail.com without extra subdomains or suffix
+  return /^[a-zA-Z0-9._%+-]+@gmail\.com$/.test(lower);
 }
 
 function isValidName(name) {
@@ -75,11 +71,7 @@ async function register(req, res) {
 
     const trimmedEmail = email.trim().toLowerCase();
     if (!isValidRoleEmail(trimmedEmail, requestedRole)) {
-      if (requestedRole === 'student') {
-        return res.status(400).json({ error: 'Student registration requires an @nmims.in email address.' });
-      } else {
-        return res.status(400).json({ error: `${requestedRole.charAt(0).toUpperCase() + requestedRole.slice(1)} registration requires an @nmims.edu email address.` });
-      }
+      return res.status(400).json({ error: 'Please enter a valid Gmail address ending with @gmail.com.' });
     }
 
     if (!isValidStrongPassword(password)) {
