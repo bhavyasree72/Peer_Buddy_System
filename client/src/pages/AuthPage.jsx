@@ -96,7 +96,7 @@ export default function AuthPage({ onLoginSuccess }) {
 
   // Login Email Placeholder
   const getLoginPlaceholder = () => {
-    return 'your.email@gmail.com or registered email';
+    return 'Enter your Gmail address (example@gmail.com)';
   };
 
   // Role switch handler that isolates state and resets errors (Issue 7)
@@ -552,7 +552,7 @@ export default function AuthPage({ onLoginSuccess }) {
               </div>
 
               <div style={{ marginBottom: '16px' }}>
-                <label>College Email</label>
+                <label>Gmail Address</label>
                 <input
                   type="email"
                   id="login_email"
