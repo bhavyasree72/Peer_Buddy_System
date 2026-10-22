@@ -1,51 +1,55 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
-import { CheckCircle2, AlertCircle } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 
 export default function AuthPage({ onLoginSuccess }) {
   const [isRegister, setIsRegister] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [forgotMode, setForgotMode] = useState(false);
-  const [master, setMaster] = useState({ schools: [], programs: [] });
+  const [master, setMaster] = useState({ schools: [], programs: [], mentors: [] });
 
-  // Login form state
+  // Login form state - with role selector for email placeholder awareness (Issue 10)
+  const [loginRole, setLoginRole] = useState('student');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  // Register form state (Step 1 and 2 from doc 7.3)
+  // Register form state - isolated state per role (Issue 7)
+  const [selectedRole, setSelectedRole] = useState('student');
   const [step, setStep] = useState(1);
-  const [regData, setRegData] = useState({
-    role: 'student', // 'student', 'mentor', 'faculty'
+
+  const initialStudentData = {
     fullName: '',
     sapId: '',
     email: '',
     password: '',
     confirmPassword: '',
-    schoolId: 'sch-stme',
-    programId: 'prog-csds',
-    semester: 1,
-    year: 1,
-    mentorId: '',
-    department: 'Computer Science & Engineering',
-    designation: 'Assistant Professor'
-  });
+    schoolId: '',
+    programId: '',
+    year: '',
+    semester: '',
+    mentorId: ''
+  };
+
+  const initialStaffData = {
+    fullName: '',
+    email: '',
+    password: '',
+    confirmPassword: '',
+    department: '',
+    designation: ''
+  };
+
+  const [studentForm, setStudentForm] = useState(initialStudentData);
+  const [facultyForm, setFacultyForm] = useState(initialStaffData);
+  const [mentorForm, setMentorForm] = useState(initialStaffData);
+
+  // Active form pointer helper
+  const currentForm = selectedRole === 'student' ? studentForm : selectedRole === 'faculty' ? facultyForm : mentorForm;
 
   useEffect(() => {
     api.getMasterData().then(data => {
-      if (data && data.schools) {
+      if (data) {
         setMaster(data);
-        if (data.schools.length > 0 && !data.schools.some(s => s.id === regData.schoolId)) {
-          setRegData(prev => ({
-            ...prev,
-            schoolId: data.schools[0].id,
-            mentorId: (data.mentors && data.mentors.length > 0) ? data.mentors[0].user_id : ''
-          }));
-        } else if (data.mentors && data.mentors.length > 0) {
-          setRegData(prev => ({
-            ...prev,
-            mentorId: prev.mentorId || data.mentors[0].user_id
-          }));
-        }
       }
     }).catch(err => console.error(err));
   }, []);
@@ -54,11 +58,63 @@ export default function AuthPage({ onLoginSuccess }) {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
-  // Live password strength hint from doc 7.3: min 8 chars, 1 letter, 1 number
-  const passwordHasMinLen = regData.password.length >= 8;
-  const passwordHasLetter = /[a-zA-Z]/.test(regData.password);
-  const passwordHasNumber = /[0-9]/.test(regData.password);
-  const passwordValid = passwordHasMinLen && passwordHasLetter && passwordHasNumber;
+  // Reset password state
+  const [resetToken, setResetToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [resetMode, setResetMode] = useState(false);
+
+  useEffect(() => {
+    // Check if URL has #reset-password or token query parameter
+    const hash = window.location.hash || '';
+    if (hash.includes('reset-password')) {
+      const urlParams = new URLSearchParams(hash.split('?')[1] || window.location.search);
+      const token = urlParams.get('token');
+      if (token) {
+        setResetToken(token);
+        setResetMode(true);
+      }
+    }
+  }, []);
+
+  // Strong password checker helper (Issue 6)
+  function evaluatePassword(pwd) {
+    const hasMinLen = (pwd || '').length >= 8;
+    const hasUpper = /[A-Z]/.test(pwd || '');
+    const hasLower = /[a-z]/.test(pwd || '');
+    const hasDigit = /[0-9]/.test(pwd || '');
+    const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(pwd || '');
+    const isValid = hasMinLen && hasUpper && hasLower && hasDigit && hasSpecial;
+    return { hasMinLen, hasUpper, hasLower, hasDigit, hasSpecial, isValid };
+  }
+
+  const regPwdStatus = evaluatePassword(currentForm.password);
+  const resetPwdStatus = evaluatePassword(newPassword);
+
+  // Dynamic Login Email Placeholder (Issue 10)
+  const getLoginPlaceholder = () => {
+    if (loginRole === 'student') return 'student@nmims.in';
+    if (loginRole === 'faculty') return 'faculty@nmims.edu';
+    if (loginRole === 'mentor') return 'mentor@nmims.edu';
+    return 'role@nmims.in / role@nmims.edu';
+  };
+
+  // Role switch handler that isolates state and resets errors (Issue 7)
+  function handleRoleSwitch(newRole) {
+    setSelectedRole(newRole);
+    setError('');
+    setStep(1);
+  }
+
+  function updateActiveForm(field, value) {
+    if (selectedRole === 'student') {
+      setStudentForm(prev => ({ ...prev, [field]: value }));
+    } else if (selectedRole === 'faculty') {
+      setFacultyForm(prev => ({ ...prev, [field]: value }));
+    } else {
+      setMentorForm(prev => ({ ...prev, [field]: value }));
+    }
+  }
 
   async function handleLogin(e) {
     e.preventDefault();
@@ -80,55 +136,120 @@ export default function AuthPage({ onLoginSuccess }) {
 
   async function handleRegister(e) {
     e.preventDefault();
+    setError('');
+
+    // Step 1 validation
     if (step === 1) {
-      if (!regData.fullName || !regData.email || !regData.password) {
-        setError('Please fill all required fields.');
+      if (!currentForm.fullName || !currentForm.email || !currentForm.password) {
+        setError('Please fill in all required fields.');
         return;
       }
-      if (regData.role === 'student' && !regData.sapId) {
-        setError('SAP ID is required for student registration.');
+
+      // Name validation: letters and spaces only, min 2 chars (Issue 6)
+      const trimmedName = currentForm.fullName.trim();
+      if (trimmedName.length < 2 || !/^[a-zA-Z\s]+$/.test(trimmedName)) {
+        setError('Full Name must contain letters and spaces only (minimum 2 characters).');
         return;
       }
-      if (!passwordValid) {
-        setError('Password must be at least 8 characters long and contain at least one letter and one number.');
+
+      // Email domain rule validation per role (Issue 5)
+      const trimmedEmail = currentForm.email.trim().toLowerCase();
+      if (selectedRole === 'student' && !trimmedEmail.endsWith('@nmims.in')) {
+        setError('Student registration requires an email ending with @nmims.in.');
         return;
       }
-      if (regData.password !== regData.confirmPassword) {
+      if ((selectedRole === 'faculty' || selectedRole === 'mentor') && !trimmedEmail.endsWith('@nmims.edu')) {
+        setError(`${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)} registration requires an email ending with @nmims.edu.`);
+        return;
+      }
+
+      // SAP ID validation for students: 11 digits starting with 7 (Issue 4)
+      if (selectedRole === 'student') {
+        if (!currentForm.sapId) {
+          setError('SAP ID is required for student registration.');
+          return;
+        }
+        if (!/^7\d{10}$/.test(currentForm.sapId.trim())) {
+          setError('SAP ID must be exactly 11 digits, numeric only, and start with 7 (e.g. 70572400072).');
+          return;
+        }
+      }
+
+      // Password rules: min 8, 1 uppercase, 1 lowercase, 1 digit, 1 special char (Issue 6)
+      if (!regPwdStatus.isValid) {
+        setError('Password does not meet the security criteria. Please follow the checklist below.');
+        return;
+      }
+
+      if (currentForm.password !== currentForm.confirmPassword) {
         setError('Passwords do not match.');
         return;
       }
-      setError('');
+
       setStep(2);
       return;
     }
 
-    if (regData.role === 'student' && !regData.mentorId) {
-      setError('Please select a mentor to connect with.');
-      return;
+    // Step 2 validation (Issues 2 & 8: Dropdowns must not be empty/placeholder)
+    if (selectedRole === 'student') {
+      if (!currentForm.schoolId) {
+        setError('Please select a school.');
+        return;
+      }
+      if (!currentForm.programId) {
+        setError('Please select a program/branch.');
+        return;
+      }
+      if (!currentForm.year) {
+        setError('Please select an academic year.');
+        return;
+      }
+      if (!currentForm.semester) {
+        setError('Please select a semester.');
+        return;
+      }
+      if (!currentForm.mentorId) {
+        setError('Please select a mentor to connect with.');
+        return;
+      }
+    } else {
+      if (!currentForm.department || !currentForm.department.trim()) {
+        setError('Please enter your department.');
+        return;
+      }
+      if (!currentForm.designation || !currentForm.designation.trim()) {
+        setError('Please enter your designation.');
+        return;
+      }
     }
 
     setLoading(true);
-    setError('');
     try {
-      const res = await api.register(regData);
+      const payload = {
+        role: selectedRole,
+        fullName: currentForm.fullName.trim(),
+        email: currentForm.email.trim().toLowerCase(),
+        password: currentForm.password,
+        ...(selectedRole === 'student' ? {
+          sapId: currentForm.sapId.trim(),
+          schoolId: currentForm.schoolId,
+          programId: currentForm.programId,
+          year: parseInt(currentForm.year, 10),
+          semester: parseInt(currentForm.semester, 10),
+          mentorId: currentForm.mentorId
+        } : {
+          department: currentForm.department.trim(),
+          designation: currentForm.designation.trim()
+        })
+      };
+
+      const res = await api.register(payload);
       setMessage(res.message);
       setIsRegister(false);
       setStep(1);
-      setRegData({
-        role: 'student',
-        fullName: '',
-        sapId: '',
-        email: '',
-        password: '',
-        confirmPassword: '',
-        schoolId: master.schools && master.schools[0] ? master.schools[0].id : 'sch-stme',
-        programId: master.programs && master.programs[0] ? master.programs[0].id : 'prog-csds',
-        semester: 1,
-        year: 1,
-        mentorId: master.mentors && master.mentors[0] ? master.mentors[0].user_id : '',
-        department: 'Computer Science & Engineering',
-        designation: 'Assistant Professor'
-      });
+      setStudentForm(initialStudentData);
+      setFacultyForm(initialStaffData);
+      setMentorForm(initialStaffData);
       setEmail('');
       setPassword('');
     } catch (err) {
@@ -138,36 +259,24 @@ export default function AuthPage({ onLoginSuccess }) {
     }
   }
 
-  const [resetToken, setResetToken] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmNewPassword, setConfirmNewPassword] = useState('');
-  const [resetMode, setResetMode] = useState(false);
-
-  useEffect(() => {
-    // Check if URL has #reset-password or token query parameter
-    const hash = window.location.hash || '';
-    if (hash.includes('reset-password')) {
-      const urlParams = new URLSearchParams(hash.split('?')[1] || window.location.search);
-      const token = urlParams.get('token');
-      if (token) {
-        setResetToken(token);
-        setResetMode(true);
-      }
-    }
-  }, []);
-
   async function handleResetPassword(e) {
     e.preventDefault();
+    setError('');
+
     if (!newPassword || !confirmNewPassword) {
       setError('Please provide and confirm your new password.');
+      return;
+    }
+    if (!resetPwdStatus.isValid) {
+      setError('New password does not satisfy strong security requirements.');
       return;
     }
     if (newPassword !== confirmNewPassword) {
       setError('Passwords do not match.');
       return;
     }
+
     setLoading(true);
-    setError('');
     try {
       const res = await api.resetPassword({ token: resetToken, newPassword });
       setMessage(res.message);
@@ -183,7 +292,7 @@ export default function AuthPage({ onLoginSuccess }) {
   async function handleForgotPassword(e) {
     e.preventDefault();
     if (!email) {
-      setError('Please provide your NMIMS email address.');
+      setError('Please provide your official NMIMS email address.');
       return;
     }
     setLoading(true);
@@ -211,18 +320,19 @@ export default function AuthPage({ onLoginSuccess }) {
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-        maxWidth: '920px',
+        maxWidth: '960px',
         width: '100%',
         backgroundColor: '#FFFFFF',
         borderRadius: 'var(--radius)',
         border: '1px solid var(--border)',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.05)'
       }}>
-        {/* Left half from doc 7.3: Short heading + 3 short lines about what platform does */}
+        {/* Left half: Welcome brand intro */}
         <div style={{
           padding: '48px 40px',
           borderRight: '1px solid var(--border)',
-          backgroundColor: '#FFFFFF',
+          backgroundColor: '#FAFAFA',
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'center'
@@ -233,51 +343,51 @@ export default function AuthPage({ onLoginSuccess }) {
             gap: '8px',
             backgroundColor: 'var(--accent-tint)',
             color: 'var(--accent)',
-            padding: '6px 12px',
+            padding: '6px 14px',
             borderRadius: '999px',
             fontSize: '13px',
             fontWeight: '600',
             width: 'fit-content',
             marginBottom: '20px'
           }}>
-            NMIMS Verified Space
+            <ShieldCheck size={16} /> NMIMS Verified Academic Portal
           </div>
           <h1 style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-main)', marginBottom: '16px', lineHeight: '1.25' }}>
             Find your study partner at NMIMS
           </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '15px', marginBottom: '24px' }}>
-            Connect with peers, collaborate on coursework, and build projects within your college community.
+          <p style={{ color: 'var(--text-muted)', fontSize: '15px', marginBottom: '28px', lineHeight: '1.5' }}>
+            Connect with peers, collaborate on coursework, schedule revision sessions, and build projects within your college community.
           </p>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
               <CheckCircle2 size={20} color="var(--accent)" style={{ flexShrink: 0, marginTop: '2px' }} />
               <div>
-                <strong style={{ display: 'block', fontSize: '14px', color: 'var(--text-main)' }}>Skill & Subject Matching</strong>
-                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Get matched by shared courses and complementary strengths.</span>
+                <strong style={{ display: 'block', fontSize: '14px', color: 'var(--text-main)' }}>Multi-Buddy Collaborative Network</strong>
+                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Connect with multiple buddies across batches, courses, and programs.</span>
               </div>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
               <CheckCircle2 size={20} color="var(--accent)" style={{ flexShrink: 0, marginTop: '2px' }} />
               <div>
-                <strong style={{ display: 'block', fontSize: '14px', color: 'var(--text-main)' }}>Study Session Scheduling</strong>
-                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Propose sessions, resolve calendar conflicts, and track attendance.</span>
+                <strong style={{ display: 'block', fontSize: '14px', color: 'var(--text-main)' }}>Dual-Verified Study Sessions</strong>
+                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Real attendance confirmed by both participants for faculty oversight.</span>
               </div>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
               <CheckCircle2 size={20} color="var(--accent)" style={{ flexShrink: 0, marginTop: '2px' }} />
               <div>
-                <strong style={{ display: 'block', fontSize: '14px', color: 'var(--text-main)' }}>Faculty & Mentor Guidance</strong>
-                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Safe moderation and shared academic resources with zero chat invasion.</span>
+                <strong style={{ display: 'block', fontSize: '14px', color: 'var(--text-main)' }}>Role-Secured NMIMS Authentication</strong>
+                <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Exclusive intra-college access for students, mentors, and faculty.</span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Right half from doc 7.3: Login / Registration Card */}
-        <div style={{ padding: '48px 40px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        {/* Right half: Auth cards */}
+        <div style={{ padding: '44px 38px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           {error && (
             <div style={{
               display: 'flex',
@@ -288,7 +398,7 @@ export default function AuthPage({ onLoginSuccess }) {
               border: '1px solid var(--accent)',
               borderRadius: 'var(--radius-sm)',
               color: 'var(--accent)',
-              fontSize: '14px',
+              fontSize: '13px',
               marginBottom: '20px'
             }}>
               <AlertCircle size={18} style={{ flexShrink: 0 }} />
@@ -303,39 +413,77 @@ export default function AuthPage({ onLoginSuccess }) {
               border: '1px solid #DCFCE7',
               borderRadius: 'var(--radius-sm)',
               color: '#166534',
-              fontSize: '14px',
+              fontSize: '13px',
               marginBottom: '20px'
             }}>
               {message}
             </div>
           )}
 
+          {/* MODE 1: Reset Password Page */}
           {resetMode ? (
-            <form onSubmit={handleResetPassword}>
-              <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>Create new password</h2>
-              <p style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: '20px' }}>
-                Enter your new password below. It must be at least 8 characters and contain at least one letter and one number.
+            <form onSubmit={handleResetPassword} autoComplete="off">
+              <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>Create New Password</h2>
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>
+                Please set a secure password meeting NMIMS security requirements.
               </p>
-              <div style={{ marginBottom: '16px' }}>
+              
+              <div style={{ marginBottom: '14px' }}>
                 <label>New Password</label>
                 <input
-                  type="password"
-                  placeholder="••••••••"
+                  type={showPassword ? 'text' : 'password'}
+                  id="reset_new_password"
+                  name="reset_new_password"
+                  placeholder="Enter strong password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   required
                 />
+                
+                {/* Password strength breakdown */}
+                <div style={{ marginTop: '8px', fontSize: '12px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+                  <span style={{ color: resetPwdStatus.hasMinLen ? '#166534' : 'var(--text-muted)' }}>
+                    {resetPwdStatus.hasMinLen ? '✓' : '○'} Min 8 chars
+                  </span>
+                  <span style={{ color: resetPwdStatus.hasUpper ? '#166534' : 'var(--text-muted)' }}>
+                    {resetPwdStatus.hasUpper ? '✓' : '○'} 1 Uppercase
+                  </span>
+                  <span style={{ color: resetPwdStatus.hasLower ? '#166534' : 'var(--text-muted)' }}>
+                    {resetPwdStatus.hasLower ? '✓' : '○'} 1 Lowercase
+                  </span>
+                  <span style={{ color: resetPwdStatus.hasDigit ? '#166534' : 'var(--text-muted)' }}>
+                    {resetPwdStatus.hasDigit ? '✓' : '○'} 1 Number
+                  </span>
+                  <span style={{ color: resetPwdStatus.hasSpecial ? '#166534' : 'var(--text-muted)' }}>
+                    {resetPwdStatus.hasSpecial ? '✓' : '○'} 1 Special char
+                  </span>
+                </div>
               </div>
+
               <div style={{ marginBottom: '20px' }}>
                 <label>Confirm New Password</label>
                 <input
-                  type="password"
-                  placeholder="••••••••"
+                  type={showPassword ? 'text' : 'password'}
+                  id="reset_confirm_password"
+                  name="reset_confirm_password"
+                  placeholder="Repeat new password"
                   value={confirmNewPassword}
                   onChange={(e) => setConfirmNewPassword(e.target.value)}
                   required
                 />
               </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px', fontSize: '13px' }}>
+                <input
+                  type="checkbox"
+                  id="toggle_show_pwd_reset"
+                  checked={showPassword}
+                  onChange={(e) => setShowPassword(e.target.checked)}
+                  style={{ width: 'auto' }}
+                />
+                <label htmlFor="toggle_show_pwd_reset" style={{ cursor: 'pointer', margin: 0 }}>Show password</label>
+              </div>
+
               <button type="submit" className="btn-primary" style={{ width: '100%', marginBottom: '12px' }} disabled={loading}>
                 {loading ? 'Updating password...' : 'Update Password'}
               </button>
@@ -344,21 +492,26 @@ export default function AuthPage({ onLoginSuccess }) {
               </button>
             </form>
           ) : forgotMode ? (
-            <form onSubmit={handleForgotPassword}>
-              <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>Reset your password</h2>
-              <p style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: '20px' }}>
-                Enter your college email address. A password reset link valid for 30 minutes will be sent.
+            /* MODE 2: Forgot Password Form */
+            <form onSubmit={handleForgotPassword} autoComplete="off">
+              <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>Reset Your Password</h2>
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>
+                Enter your registered NMIMS email address. A password reset link valid for 30 minutes will be sent to your inbox.
               </p>
+              
               <div style={{ marginBottom: '16px' }}>
-                <label>NMIMS Email</label>
+                <label>NMIMS Email Address</label>
                 <input
                   type="email"
-                  placeholder="name@nmims.in"
+                  id="forgot_email"
+                  name="forgot_email"
+                  placeholder="name@nmims.in or name@nmims.edu"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
                 />
               </div>
+
               <button type="submit" className="btn-primary" style={{ width: '100%', marginBottom: '12px' }} disabled={loading}>
                 {loading ? 'Sending link...' : 'Send reset link'}
               </button>
@@ -367,20 +520,48 @@ export default function AuthPage({ onLoginSuccess }) {
               </button>
             </form>
           ) : !isRegister ? (
-            /* Login Form */
+            /* MODE 3: Login Form with Role-Aware Email Placeholder (Issue 10) */
             <form onSubmit={handleLogin} autoComplete="off">
-              <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>Sign in to your account</h2>
-              <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>
-                Use your official NMIMS email address.
+              <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '6px' }}>Sign in to your account</h2>
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
+                Select your role to adapt login parameters.
               </p>
+
+              {/* Role Toggle for Login Placeholder Awareness */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', marginBottom: '18px' }}>
+                {[
+                  { id: 'student', label: 'Student' },
+                  { id: 'faculty', label: 'Faculty' },
+                  { id: 'mentor', label: 'Mentor' }
+                ].map(r => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => setLoginRole(r.id)}
+                    style={{
+                      padding: '7px 8px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: `1px solid ${loginRole === r.id ? 'var(--accent)' : 'var(--border)'}`,
+                      backgroundColor: loginRole === r.id ? 'var(--accent-tint)' : '#FFFFFF',
+                      color: loginRole === r.id ? 'var(--accent)' : 'var(--text-main)',
+                      fontWeight: loginRole === r.id ? '600' : '500',
+                      fontSize: '12px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
 
               <div style={{ marginBottom: '16px' }}>
                 <label>College Email</label>
                 <input
                   type="email"
-                  name="email"
+                  id="login_email"
+                  name="login_email"
                   autoComplete="off"
-                  placeholder="student@nmims.in"
+                  placeholder={getLoginPlaceholder()}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -391,8 +572,9 @@ export default function AuthPage({ onLoginSuccess }) {
                 <label>Password</label>
                 <input
                   type={showPassword ? 'text' : 'password'}
-                  name="password"
-                  autoComplete="new-password"
+                  id="login_password"
+                  name="login_password"
+                  autoComplete="current-password"
                   placeholder="Enter your password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -404,6 +586,7 @@ export default function AuthPage({ onLoginSuccess }) {
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', margin: 0, fontSize: '13px' }}>
                   <input
                     type="checkbox"
+                    id="login_show_pwd"
                     checked={showPassword}
                     onChange={(e) => setShowPassword(e.target.checked)}
                     style={{ width: 'auto' }}
@@ -413,18 +596,18 @@ export default function AuthPage({ onLoginSuccess }) {
                 <a
                   href="#forgot"
                   onClick={(e) => { e.preventDefault(); setForgotMode(true); }}
-                  style={{ fontSize: '13px', color: 'var(--accent)' }}
+                  style={{ fontSize: '13px', color: 'var(--accent)', textDecoration: 'none' }}
                 >
                   Forgot password?
                 </a>
               </div>
 
               <button type="submit" className="btn-primary" style={{ width: '100%', marginBottom: '20px' }} disabled={loading}>
-                {loading ? 'Signing in...' : 'Login'}
+                {loading ? 'Signing in...' : 'Sign In'}
               </button>
 
-              <div style={{ textAlign: 'center', fontSize: '14px', color: 'var(--text-muted)' }}>
-                New here?{' '}
+              <div style={{ textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)' }}>
+                New to Peer Buddy?{' '}
                 <a
                   href="#register"
                   onClick={(e) => {
@@ -432,125 +615,153 @@ export default function AuthPage({ onLoginSuccess }) {
                     setIsRegister(true);
                     setStep(1);
                     setError('');
-                    setEmail('');
-                    setPassword('');
                   }}
-                  style={{ fontWeight: '600' }}
+                  style={{ fontWeight: '600', color: 'var(--accent)', textDecoration: 'none' }}
                 >
-                  Create account
+                  Create an account
                 </a>
               </div>
             </form>
           ) : (
-            /* Registration Form (Two Steps) */
+            /* MODE 4: Registration Form (Isolated States per Role & Placeholders) */
             <form onSubmit={handleRegister} autoComplete="off">
               <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '4px' }}>
-                Create {regData.role === 'student' ? 'Student' : regData.role === 'mentor' ? 'Mentor' : 'Faculty'} Account
+                Register as {selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)}
               </h2>
               <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
-                Step {step} of 2: {step === 1 ? 'Role & login details' : regData.role === 'student' ? 'Academic details & mentor' : 'Department & designation'}
+                Step {step} of 2: {step === 1 ? 'Personal & login details' : selectedRole === 'student' ? 'Academic details & mentor' : 'Department & designation'}
               </p>
+
+              {/* Role Selection Tabs with Form State Isolation (Issue 7) */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ marginBottom: '6px', display: 'block', fontSize: '13px' }}>I am registering as</label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
+                  {[
+                    { id: 'student', label: 'Student' },
+                    { id: 'faculty', label: 'Faculty' },
+                    { id: 'mentor', label: 'Mentor' }
+                  ].map(r => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => handleRoleSwitch(r.id)}
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: 'var(--radius-sm)',
+                        border: `1px solid ${selectedRole === r.id ? 'var(--accent)' : 'var(--border)'}`,
+                        backgroundColor: selectedRole === r.id ? 'var(--accent-tint)' : '#FFFFFF',
+                        color: selectedRole === r.id ? 'var(--accent)' : 'var(--text-main)',
+                        fontWeight: selectedRole === r.id ? '600' : '500',
+                        fontSize: '13px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {step === 1 ? (
                 <>
-                  {/* Role Selection Tabs */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <label style={{ marginBottom: '6px', display: 'block' }}>I am registering as</label>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
-                      {[
-                        { id: 'student', label: 'Student' },
-                        { id: 'mentor', label: 'Mentor' },
-                        { id: 'faculty', label: 'Faculty' }
-                      ].map(r => (
-                        <button
-                          key={r.id}
-                          type="button"
-                          onClick={() => setRegData({ ...regData, role: r.id })}
-                          style={{
-                            padding: '8px 10px',
-                            borderRadius: 'var(--radius-sm)',
-                            border: `1px solid ${regData.role === r.id ? 'var(--accent)' : 'var(--border)'}`,
-                            backgroundColor: regData.role === r.id ? 'var(--accent-tint)' : '#FFFFFF',
-                            color: regData.role === r.id ? 'var(--accent)' : 'var(--text-main)',
-                            fontWeight: regData.role === r.id ? '600' : '500',
-                            fontSize: '13px',
-                            cursor: 'pointer',
-                            transition: 'all 0.15s ease'
-                          }}
-                        >
-                          {r.label}
-                        </button>
-                      ))}
+                  {/* Name: letters and spaces only, min 2 chars (Issue 6) */}
+                  <div style={{ marginBottom: '12px' }}>
+                    <label>Full Name *</label>
+                    <input
+                      type="text"
+                      id={`${selectedRole}_fullname`}
+                      name={`${selectedRole}_fullname`}
+                      autoComplete="off"
+                      placeholder="e.g. Bhavya Sree"
+                      value={currentForm.fullName}
+                      onChange={(e) => updateActiveForm('fullName', e.target.value)}
+                      required
+                    />
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      Letters and spaces only (min 2 characters)
                     </div>
                   </div>
 
-                  <div style={{ marginBottom: '12px' }}>
-                    <label>Full Name</label>
-                    <input
-                      type="text"
-                      name="fullName"
-                      autoComplete="off"
-                      placeholder={regData.role === 'student' ? 'e.g. Bhavya G' : regData.role === 'mentor' ? 'e.g. Dr. Rajesh Deshmukh' : 'e.g. Prof. Ananya Iyer'}
-                      value={regData.fullName}
-                      onChange={(e) => setRegData({ ...regData, fullName: e.target.value })}
-                      required
-                    />
-                  </div>
-
-                  {regData.role === 'student' && (
+                  {/* SAP ID: Student only, 11 digits starting with 7 (Issue 4 & 7) */}
+                  {selectedRole === 'student' && (
                     <div style={{ marginBottom: '12px' }}>
-                      <label>SAP ID (11 digits)</label>
+                      <label>SAP ID (11 digits, starts with 7) *</label>
                       <input
                         type="text"
-                        name="sapId"
+                        id="student_sap_id"
+                        name="student_sap_id"
                         autoComplete="off"
-                        placeholder="e.g. 70572400072"
-                        value={regData.sapId}
-                        onChange={(e) => setRegData({ ...regData, sapId: e.target.value })}
+                        maxLength={11}
+                        placeholder="70572400072"
+                        value={studentForm.sapId}
+                        onChange={(e) => updateActiveForm('sapId', e.target.value.replace(/\D/g, ''))}
                         required
                       />
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        Must be exactly 11 numeric digits starting with 7
+                      </div>
                     </div>
                   )}
 
+                  {/* Email: Role specific domain (Issue 5 & 7) */}
                   <div style={{ marginBottom: '12px' }}>
-                    <label>NMIMS Email</label>
+                    <label>{selectedRole === 'student' ? 'Student Email (@nmims.in) *' : 'Institutional Email (@nmims.edu) *'}</label>
                     <input
                       type="email"
-                      name="regEmail"
+                      id={`${selectedRole}_email`}
+                      name={`${selectedRole}_email`}
                       autoComplete="off"
-                      placeholder="name@nmims.in"
-                      value={regData.email}
-                      onChange={(e) => setRegData({ ...regData, email: e.target.value })}
+                      placeholder={selectedRole === 'student' ? 'name@nmims.in' : 'name@nmims.edu'}
+                      value={currentForm.email}
+                      onChange={(e) => updateActiveForm('email', e.target.value)}
                       required
                     />
                   </div>
 
+                  {/* Password with live strength indicator (Issue 6) */}
                   <div style={{ marginBottom: '12px' }}>
-                    <label>Password</label>
+                    <label>Password *</label>
                     <input
                       type={showPassword ? 'text' : 'password'}
-                      name="regPassword"
+                      id={`${selectedRole}_password`}
+                      name={`${selectedRole}_password`}
                       autoComplete="new-password"
-                      placeholder="Min 8 chars, 1 letter, 1 number"
-                      value={regData.password}
-                      onChange={(e) => setRegData({ ...regData, password: e.target.value })}
+                      placeholder="Create a strong password"
+                      value={currentForm.password}
+                      onChange={(e) => updateActiveForm('password', e.target.value)}
                       required
                     />
-                    {/* Live Strength Hint from doc 7.3 */}
-                    <div style={{ fontSize: '12px', marginTop: '4px', color: passwordValid ? '#166534' : 'var(--text-muted)' }}>
-                      {passwordValid ? '✓ Password criteria met' : 'Requires min 8 characters, at least 1 letter and 1 number'}
+                    
+                    {/* Live Criteria Breakdown */}
+                    <div style={{ marginTop: '6px', fontSize: '12px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px' }}>
+                      <span style={{ color: regPwdStatus.hasMinLen ? '#166534' : 'var(--text-muted)' }}>
+                        {regPwdStatus.hasMinLen ? '✓' : '○'} Min 8 chars
+                      </span>
+                      <span style={{ color: regPwdStatus.hasUpper ? '#166534' : 'var(--text-muted)' }}>
+                        {regPwdStatus.hasUpper ? '✓' : '○'} 1 Uppercase
+                      </span>
+                      <span style={{ color: regPwdStatus.hasLower ? '#166534' : 'var(--text-muted)' }}>
+                        {regPwdStatus.hasLower ? '✓' : '○'} 1 Lowercase
+                      </span>
+                      <span style={{ color: regPwdStatus.hasDigit ? '#166534' : 'var(--text-muted)' }}>
+                        {regPwdStatus.hasDigit ? '✓' : '○'} 1 Number
+                      </span>
+                      <span style={{ color: regPwdStatus.hasSpecial ? '#166534' : 'var(--text-muted)' }}>
+                        {regPwdStatus.hasSpecial ? '✓' : '○'} 1 Special char
+                      </span>
                     </div>
                   </div>
 
                   <div style={{ marginBottom: '16px' }}>
-                    <label>Confirm Password</label>
+                    <label>Confirm Password *</label>
                     <input
                       type={showPassword ? 'text' : 'password'}
-                      name="regConfirmPassword"
+                      id={`${selectedRole}_confirm_password`}
+                      name={`${selectedRole}_confirm_password`}
                       autoComplete="new-password"
-                      placeholder="Confirm password"
-                      value={regData.confirmPassword}
-                      onChange={(e) => setRegData({ ...regData, confirmPassword: e.target.value })}
+                      placeholder="Repeat your password"
+                      value={currentForm.confirmPassword}
+                      onChange={(e) => updateActiveForm('confirmPassword', e.target.value)}
                       required
                     />
                   </div>
@@ -560,24 +771,20 @@ export default function AuthPage({ onLoginSuccess }) {
                   </button>
                 </>
               ) : (
+                /* Step 2: Academic or Department details with disabled, selected placeholders (Issues 2 & 8) */
                 <>
-                  {regData.role === 'student' ? (
+                  {selectedRole === 'student' ? (
                     <>
+                      {/* School Dropdown with Disabled Placeholder */}
                       <div style={{ marginBottom: '12px' }}>
-                        <label>School</label>
+                        <label>School *</label>
                         <select
-                          value={regData.schoolId}
-                          onChange={(e) => {
-                            const newSchoolId = e.target.value;
-                            const schoolObj = master.schools.find(s => s.id === newSchoolId || s.code === newSchoolId);
-                            const maxSem = schoolObj ? (schoolObj.semesters || 8) : 8;
-                            setRegData(prev => ({
-                              ...prev,
-                              schoolId: newSchoolId,
-                              semester: prev.semester > maxSem ? 1 : prev.semester
-                            }));
-                          }}
+                          id="student_school"
+                          value={studentForm.schoolId}
+                          onChange={(e) => updateActiveForm('schoolId', e.target.value)}
+                          required
                         >
+                          <option value="" disabled>Select school…</option>
                           {master.schools && master.schools.length > 0 ? (
                             master.schools.map(s => (
                               <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
@@ -594,15 +801,19 @@ export default function AuthPage({ onLoginSuccess }) {
                         </select>
                       </div>
 
+                      {/* Program Dropdown with Disabled Placeholder */}
                       <div style={{ marginBottom: '12px' }}>
-                        <label>Program</label>
+                        <label>Program / Branch *</label>
                         <select
-                          value={regData.programId}
-                          onChange={(e) => setRegData({ ...regData, programId: e.target.value })}
+                          id="student_program"
+                          value={studentForm.programId}
+                          onChange={(e) => updateActiveForm('programId', e.target.value)}
+                          required
                         >
+                          <option value="" disabled>Select program / branch…</option>
                           {master.programs && master.programs.length > 0 ? (
                             master.programs
-                              .filter(p => !regData.schoolId || p.school_id === regData.schoolId)
+                              .filter(p => !studentForm.schoolId || p.school_id === studentForm.schoolId)
                               .map(p => (
                                 <option key={p.id} value={p.id}>{p.name} ({p.code})</option>
                               ))
@@ -618,13 +829,17 @@ export default function AuthPage({ onLoginSuccess }) {
                         </select>
                       </div>
 
+                      {/* Year & Semester with Disabled Placeholders */}
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '14px' }}>
                         <div>
-                          <label>Year</label>
+                          <label>Academic Year *</label>
                           <select
-                            value={regData.year}
-                            onChange={(e) => setRegData({ ...regData, year: parseInt(e.target.value, 10) })}
+                            id="student_year"
+                            value={studentForm.year}
+                            onChange={(e) => updateActiveForm('year', e.target.value)}
+                            required
                           >
+                            <option value="" disabled>Select year…</option>
                             <option value={1}>1st Year</option>
                             <option value={2}>2nd Year</option>
                             <option value={3}>3rd Year</option>
@@ -632,34 +847,31 @@ export default function AuthPage({ onLoginSuccess }) {
                           </select>
                         </div>
                         <div>
-                          <label>Semester</label>
+                          <label>Semester *</label>
                           <select
-                            value={regData.semester}
-                            onChange={(e) => setRegData({ ...regData, semester: parseInt(e.target.value, 10) })}
+                            id="student_semester"
+                            value={studentForm.semester}
+                            onChange={(e) => updateActiveForm('semester', e.target.value)}
+                            required
                           >
-                            {(() => {
-                              const schoolObj = master.schools ? master.schools.find(s => s.id === regData.schoolId || s.code === regData.schoolId) : null;
-                              const count = schoolObj ? (schoolObj.semesters || 8) : 8;
-                              return Array.from({ length: count }, (_, i) => i + 1).map(s => (
-                                <option key={s} value={s}>Semester {s}</option>
-                              ));
-                            })()}
+                            <option value="" disabled>Select semester…</option>
+                            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(s => (
+                              <option key={s} value={s}>Semester {s}</option>
+                            ))}
                           </select>
                         </div>
                       </div>
 
-                      {/* Mentor Selection (Mandatory for Student to connect with mentor) */}
+                      {/* Mentor Selection with Disabled Placeholder */}
                       <div style={{ marginBottom: '20px' }}>
-                        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span>Select Mentor to Connect With *</span>
-                          <span style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: 'normal' }}>Required</span>
-                        </label>
+                        <label>Select Mentor to Connect With *</label>
                         <select
-                          value={regData.mentorId}
-                          onChange={(e) => setRegData({ ...regData, mentorId: e.target.value })}
+                          id="student_mentor"
+                          value={studentForm.mentorId}
+                          onChange={(e) => updateActiveForm('mentorId', e.target.value)}
                           required
                         >
-                          <option value="">-- Choose your Mentor --</option>
+                          <option value="" disabled>Select mentor…</option>
                           {master.mentors && master.mentors.length > 0 ? (
                             master.mentors.map(m => (
                               <option key={m.user_id} value={m.user_id}>
@@ -670,36 +882,35 @@ export default function AuthPage({ onLoginSuccess }) {
                             <option value="usr-mentor-1">Dr. Rajesh Deshmukh (Computer Engineering & Data Science)</option>
                           )}
                         </select>
-                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                          You will be automatically connected to this mentor for academic guidance and review.
-                        </div>
                       </div>
                     </>
                   ) : (
-                    /* Mentor / Faculty Academic & Department Details */
+                    /* Faculty / Mentor Department & Designation */
                     <>
                       <div style={{ marginBottom: '14px' }}>
-                        <label>Department</label>
+                        <label>Department *</label>
                         <input
                           type="text"
-                          name="department"
+                          id={`${selectedRole}_department`}
+                          name={`${selectedRole}_department`}
                           autoComplete="off"
                           placeholder="e.g. Computer Science & Engineering"
-                          value={regData.department}
-                          onChange={(e) => setRegData({ ...regData, department: e.target.value })}
+                          value={currentForm.department}
+                          onChange={(e) => updateActiveForm('department', e.target.value)}
                           required
                         />
                       </div>
 
                       <div style={{ marginBottom: '20px' }}>
-                        <label>Designation</label>
+                        <label>Designation *</label>
                         <input
                           type="text"
-                          name="designation"
+                          id={`${selectedRole}_designation`}
+                          name={`${selectedRole}_designation`}
                           autoComplete="off"
-                          placeholder={regData.role === 'mentor' ? 'e.g. Senior Technical Mentor / Alumnus Guide' : 'e.g. Assistant Professor / Associate Professor'}
-                          value={regData.designation}
-                          onChange={(e) => setRegData({ ...regData, designation: e.target.value })}
+                          placeholder={selectedRole === 'mentor' ? 'e.g. Senior Technical Mentor / Guide' : 'e.g. Assistant Professor'}
+                          value={currentForm.designation}
+                          onChange={(e) => updateActiveForm('designation', e.target.value)}
                           required
                         />
                       </div>
@@ -717,7 +928,7 @@ export default function AuthPage({ onLoginSuccess }) {
                 </>
               )}
 
-              <div style={{ textAlign: 'center', fontSize: '14px', color: 'var(--text-muted)' }}>
+              <div style={{ textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)' }}>
                 Already registered?{' '}
                 <a
                   href="#login"
@@ -726,25 +937,8 @@ export default function AuthPage({ onLoginSuccess }) {
                     setIsRegister(false);
                     setStep(1);
                     setError('');
-                    setRegData({
-                      role: 'student',
-                      fullName: '',
-                      sapId: '',
-                      email: '',
-                      password: '',
-                      confirmPassword: '',
-                      schoolId: master.schools && master.schools[0] ? master.schools[0].id : 'sch-stme',
-                      programId: master.programs && master.programs[0] ? master.programs[0].id : 'prog-csds',
-                      semester: 1,
-                      year: 1,
-                      mentorId: master.mentors && master.mentors[0] ? master.mentors[0].user_id : '',
-                      department: 'Computer Science & Engineering',
-                      designation: 'Assistant Professor'
-                    });
-                    setEmail('');
-                    setPassword('');
                   }}
-                  style={{ fontWeight: '600' }}
+                  style={{ fontWeight: '600', color: 'var(--accent)', textDecoration: 'none' }}
                 >
                   Sign in
                 </a>

@@ -121,9 +121,9 @@ async function searchBuddies(req, res) {
       if (s.key === 'weight_rating') weights.rating = parseInt(s.value, 10);
     });
 
-    // Query active students who are open to requests, excluding self
+    // Query active registered students, excluding self (Issue 10)
     let sql = `
-      SELECT u.user_id, u.email, u.last_login,
+      SELECT u.user_id, u.sap_id, u.email, u.last_login,
              sp.full_name, sp.school_id, sp.program_id, sp.semester, sp.year, sp.bio, sp.photo_url, sp.study_mode,
              s.name as school_name, p.name as program_name,
              (
@@ -140,7 +140,6 @@ async function searchBuddies(req, res) {
       WHERE u.role = 'student' 
         AND u.status = 'active'
         AND u.user_id != ?
-        AND sp.open_to_requests = 1
     `;
     const params = [currentUserId];
 
@@ -186,13 +185,15 @@ async function searchBuddies(req, res) {
       const availabilitySlots = (await query('SELECT DISTINCT day_of_week FROM availability WHERE user_id = ?', [student.user_id])).rows;
       const days = availabilitySlots.map(a => a.day_of_week);
 
-      // Keyword filter: check name, skills, interests
+      // Keyword filter: check name, SAP ID, semester, skills, interests (Issue 10)
       if (q && q.trim()) {
         const queryTerm = q.trim().toLowerCase();
         const matchesName = student.full_name && student.full_name.toLowerCase().includes(queryTerm);
+        const matchesSap = student.sap_id && student.sap_id.includes(queryTerm);
+        const matchesSem = student.semester && (`semester ${student.semester}`.includes(queryTerm) || String(student.semester) === queryTerm);
         const matchesSkill = studentSkills.some(sk => sk.name.toLowerCase().includes(queryTerm));
         const matchesInterest = studentInterests.some(it => it.name.toLowerCase().includes(queryTerm));
-        if (!matchesName && !matchesSkill && !matchesInterest) {
+        if (!matchesName && !matchesSap && !matchesSem && !matchesSkill && !matchesInterest) {
           continue;
         }
       }
@@ -221,7 +222,7 @@ async function searchBuddies(req, res) {
       // Check existing connection or pending request status
       const connRes = await query(`
         SELECT connection_id FROM connections
-        WHERE (user_a = ? AND user_b = ?) OR (user_a = ? AND user_b = ?) AND status = 'active'
+        WHERE ((user_a = ? AND user_b = ?) OR (user_a = ? AND user_b = ?)) AND status = 'active'
       `, [currentUserId, student.user_id, student.user_id, currentUserId]);
       const isConnected = connRes.rowCount > 0;
 
@@ -237,6 +238,7 @@ async function searchBuddies(req, res) {
 
       results.push({
         userId: student.user_id,
+        sapId: student.sap_id,
         fullName: student.full_name,
         photoUrl: student.photo_url,
         schoolName: student.school_name,

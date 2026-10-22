@@ -175,7 +175,7 @@ async function markAttendance(req, res) {
 
     if (existingAtt.rowCount > 0) {
       await query(`
-        UPDATE session_attendance SET attended = ?, marked_at = datetime('now')
+        UPDATE session_attendance SET attended = ?, marked_at = CURRENT_TIMESTAMP
         WHERE session_id = ? AND user_id = ?
       `, [attended, sessionId, userId]);
     } else {
@@ -185,13 +185,29 @@ async function markAttendance(req, res) {
       `, [uuidv4(), sessionId, userId, attended]);
     }
 
-    // If both marked attended, mark session completed
-    const attCount = await query(`SELECT COUNT(*) as c FROM session_attendance WHERE session_id = ?`, [sessionId]);
-    if (attCount.rows[0].c >= 1) {
-      await query(`UPDATE study_sessions SET status = 'completed' WHERE session_id = ?`, [sessionId]);
+    // Dual Confirmation: Record confirmation for participant (Issue 13)
+    const isOrganizer = session.organizer_id === userId;
+    const confirmedVal = attended === 'yes' ? 1 : 0;
+
+    if (isOrganizer) {
+      await query(`UPDATE study_sessions SET confirmed_by_organizer = ? WHERE session_id = ?`, [confirmedVal, sessionId]);
+    } else {
+      await query(`UPDATE study_sessions SET confirmed_by_partner = ? WHERE session_id = ?`, [confirmedVal, sessionId]);
     }
 
-    return res.json({ message: 'Attendance recorded successfully.' });
+    // Check if both confirmed (2/2 verification)
+    const updatedSession = (await query(`SELECT confirmed_by_organizer, confirmed_by_partner FROM study_sessions WHERE session_id = ?`, [sessionId])).rows[0];
+    const isBothConfirmed = updatedSession && updatedSession.confirmed_by_organizer === 1 && updatedSession.confirmed_by_partner === 1;
+
+    if (isBothConfirmed) {
+      await query(`UPDATE study_sessions SET is_verified = 1, status = 'completed' WHERE session_id = ?`, [sessionId]);
+    }
+
+    return res.json({
+      message: 'Attendance recorded successfully.',
+      verified: isBothConfirmed,
+      verificationCount: (updatedSession?.confirmed_by_organizer || 0) + (updatedSession?.confirmed_by_partner || 0)
+    });
   } catch (err) {
     console.error('markAttendance error:', err);
     return res.status(500).json({ error: 'Failed to record attendance.' });

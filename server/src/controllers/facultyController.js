@@ -14,7 +14,16 @@ async function getFacultyOverview(req, res) {
     `);
     const activeStudents = activeStudentsRes.rows[0].c;
 
-    // 2. Sessions this week
+    // Helper: convert date to IST string YYYY-MM-DD
+    function getISTDateStr(dateObj) {
+      const istDate = new Date(dateObj.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const y = istDate.getFullYear();
+      const m = String(istDate.getMonth() + 1).padStart(2, '0');
+      const d = String(istDate.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    // 2. Real Sessions this week
     const now = new Date();
     const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -23,39 +32,60 @@ async function getFacultyOverview(req, res) {
     `, [oneWeekAgo]);
     const sessionsThisWeek = sessionsWeekRes.rows[0].c;
 
-    // 3. Attendance percentage
-    const attTotalRes = await query(`SELECT COUNT(*) as total FROM session_attendance`);
-    const attYesRes = await query(`SELECT COUNT(*) as attended FROM session_attendance WHERE attended = 'yes'`);
+    // 3. Real Attendance % = (verified sessions / total scheduled sessions) * 100 (Issue 13)
+    // Never default to 100% when there are 0 sessions.
+    const totalSessionsRes = await query(`SELECT COUNT(*) as c FROM study_sessions WHERE status IN ('confirmed', 'completed')`);
+    const verifiedSessionsRes = await query(`
+      SELECT COUNT(*) as c FROM study_sessions 
+      WHERE (is_verified = 1 OR (confirmed_by_organizer = 1 AND confirmed_by_partner = 1))
+    `);
 
-    const totalAttendanceMarks = attTotalRes.rows[0].total || 0;
-    const attendedMarks = attYesRes.rows[0].attended || 0;
-    const attendancePct = totalAttendanceMarks > 0 ? Math.round((attendedMarks / totalAttendanceMarks) * 100) : 100;
+    const totalScheduled = totalSessionsRes.rows[0].c || 0;
+    const verifiedCount = verifiedSessionsRes.rows[0].c || 0;
+    const attendancePct = totalScheduled > 0 ? Math.round((verifiedCount / totalScheduled) * 100) : 0;
 
-    // 4. Weekly sessions chart built from real database data (last 7 days counts)
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    // 4. Last 7 days session activity grouped by day in IST (Asia/Kolkata) (Issue 12)
+    // Include days with zero as 0
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const chartData = [];
+
+    // Fetch all sessions in the last 7 days window
+    const recentSessionsRes = await query(`
+      SELECT session_id, start_at FROM study_sessions 
+      WHERE start_at >= ?
+    `, [new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000).toISOString()]);
+
+    const dateCountMap = {};
+    for (const s of recentSessionsRes.rows) {
+      const sDateStr = getISTDateStr(new Date(s.start_at));
+      dateCountMap[sDateStr] = (dateCountMap[sDateStr] || 0) + 1;
+    }
+
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-      const dateStr = d.toISOString().split('T')[0];
-      const countRes = await query(`
-        SELECT COUNT(*) as c FROM study_sessions 
-        WHERE start_at LIKE ?
-      `, [`${dateStr}%`]);
+      const targetTime = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+      const targetDateStr = getISTDateStr(targetTime);
+      const istDateObj = new Date(targetTime.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+
       chartData.push({
-        day: days[d.getDay()],
-        date: dateStr,
-        sessions: countRes.rows[0].c || 0
+        day: dayNames[istDateObj.getDay()],
+        date: targetDateStr,
+        sessions: dateCountMap[targetDateStr] || 0
       });
     }
+
+    const totalSevenDaySessions = chartData.reduce((acc, d) => acc + d.sessions, 0);
 
     return res.json({
       department,
       metrics: {
         activeStudents,
         sessionsThisWeek,
-        attendancePercentage: attendancePct
+        totalScheduledSessions: totalScheduled,
+        verifiedSessions: verifiedCount,
+        attendancePercentage: totalScheduled > 0 ? attendancePct : null
       },
-      chartData
+      chartData,
+      totalSevenDaySessions
     });
   } catch (err) {
     console.error('getFacultyOverview error:', err);
@@ -72,11 +102,12 @@ async function getFacultySessions(req, res) {
 
     let sql = `
       SELECT s.session_id, s.title, s.subject, s.start_at, s.end_at, s.mode, s.location_or_link, s.status, s.semester,
+             s.confirmed_by_organizer, s.confirmed_by_partner, s.is_verified,
              org.full_name as organizer_name,
              part.full_name as partner_name,
              p.name as program_name,
-             (SELECT COUNT(*) FROM session_attendance WHERE session_id = s.session_id AND attended = 'yes') as attendees_count,
-             (SELECT COUNT(*) FROM session_attendance WHERE session_id = s.session_id) as total_attendance_records
+             ((COALESCE(s.confirmed_by_organizer, 0) + COALESCE(s.confirmed_by_partner, 0))) as attendees_count,
+             (CASE WHEN s.is_verified = 1 OR (s.confirmed_by_organizer = 1 AND s.confirmed_by_partner = 1) THEN 1 ELSE 0 END) as verified_session
       FROM study_sessions s
       JOIN student_profiles org ON s.organizer_id = org.user_id
       JOIN student_profiles part ON s.partner_id = part.user_id

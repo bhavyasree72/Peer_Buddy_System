@@ -30,12 +30,12 @@ export default function StudentHome({ user, onNavigate }) {
   async function loadHomeData() {
     setLoading(true);
     try {
-      const [reqs, sess, notifs, sugg, prof] = await Promise.all([
+      const [reqs, sess, sugg, prof, convs] = await Promise.all([
         api.getRequests(),
         api.getSessions(),
-        api.getNotifications(),
         api.getSuggestedBuddies(),
-        api.getProfile()
+        api.getProfile(),
+        api.getConversations().catch(() => ({ conversations: [] }))
       ]);
 
       const pendingReceived = reqs.received ? reqs.received.length : 0;
@@ -46,10 +46,12 @@ export default function StudentHome({ user, onNavigate }) {
         .filter(s => s.status === 'confirmed' && new Date(s.start_at) > now)
         .sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
 
+      const unreadMsgs = (convs.conversations || []).reduce((acc, c) => acc + (c.unread_count || 0), 0);
+
       setData({
         pendingRequestsCount: pendingReceived,
         nextSession: futureSessions[0] || null,
-        unreadMessagesCount: notifs.unreadCount || 0,
+        unreadMessagesCount: unreadMsgs,
         suggestedBuddies: sugg.suggestions || [],
         profileCompleteness: prof.profile?.profile_completeness || 0,
         upcomingSessions: futureSessions.slice(0, 3)

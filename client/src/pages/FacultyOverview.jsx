@@ -66,52 +66,90 @@ export default function FacultyOverview({ user }) {
         </div>
 
         <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-            <CheckCircle2 size={18} color="#166534" />
-            <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Attendance Rate</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <CheckCircle2 size={18} color="#166534" />
+              <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Verified Attendance Rate</span>
+            </div>
+            <span
+              title="Attendance % = (Verified sessions attended / Total scheduled sessions) × 100. Sessions count as verified only when confirmed by both participants (2/2)."
+              style={{
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '18px',
+                height: '18px',
+                borderRadius: '50%',
+                backgroundColor: 'var(--bg-subtle)',
+                color: 'var(--text-muted)',
+                fontSize: '11px',
+                fontWeight: '700'
+              }}
+            >
+              ℹ
+            </span>
           </div>
-          <div style={{ fontSize: '26px', fontWeight: '700', color: '#166534' }}>
-            {data.metrics.attendancePercentage}%
+          <div style={{ fontSize: '26px', fontWeight: '700', color: data.metrics.attendancePercentage !== null ? '#166534' : 'var(--text-muted)' }}>
+            {data.metrics.attendancePercentage !== null ? `${data.metrics.attendancePercentage}%` : 'N/A'}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+            Basis: {data.metrics.verifiedSessions || 0} / {data.metrics.totalScheduledSessions || 0} verified sessions
           </div>
         </div>
       </div>
 
-      {/* Weekly sessions chart built from real database data */}
+      {/* Weekly sessions chart built from real database data (Issue 12) */}
       <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
-          <TrendingUp size={20} color="#E4574C" />
-          <h2 style={{ fontSize: '18px', fontWeight: '600' }}>Weekly Study Session Volume</h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <TrendingUp size={20} color="#E4574C" />
+            <h2 style={{ fontSize: '18px', fontWeight: '600' }}>Last 7 Days Session Activity (IST)</h2>
+          </div>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            Timezone: Indian Standard Time (IST)
+          </span>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', height: '200px', padding: '0 20px 20px 20px', borderBottom: '1px solid var(--border)', gap: '12px' }}>
-          {data.chartData && data.chartData.map(item => {
-            const heightPct = Math.max(10, Math.round((item.sessions / maxBar) * 160));
-            return (
-              <div key={item.date} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, gap: '8px' }}>
-                <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-main)' }}>
-                  {item.sessions}
-                </span>
-                <div
-                  style={{
-                    width: '100%',
-                    maxWidth: '36px',
-                    height: `${heightPct}px`,
-                    backgroundColor: item.sessions > 0 ? '#E4574C' : 'var(--bg-subtle)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '4px 4px 0 0',
-                    transition: 'height 0.3s'
-                  }}
-                  title={`${item.date}: ${item.sessions} session(s)`}
-                />
-                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                  {item.day}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+        {(!data.chartData || data.chartData.length === 0 || data.totalSevenDaySessions === 0) ? (
+          <div style={{ padding: '40px 20px', textAlign: 'center', backgroundColor: 'var(--bg-subtle)', borderRadius: 'var(--radius-sm)' }}>
+            <Calendar size={32} color="var(--text-muted)" style={{ margin: '0 auto 12px auto' }} />
+            <h4 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-main)', marginBottom: '4px' }}>No Sessions in the Last 7 Days</h4>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+              Activity volume will automatically chart here as students schedule and conduct study sessions.
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', height: '200px', padding: '0 20px 20px 20px', borderBottom: '1px solid var(--border)', gap: '12px' }}>
+            {data.chartData.map(item => {
+              const heightPct = Math.max(12, Math.round((item.sessions / maxBar) * 160));
+              return (
+                <div key={item.date} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, gap: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-main)' }}>
+                    {item.sessions}
+                  </span>
+                  <div
+                    style={{
+                      width: '100%',
+                      maxWidth: '36px',
+                      height: `${heightPct}px`,
+                      backgroundColor: item.sessions > 0 ? '#E4574C' : 'var(--bg-subtle)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '4px 4px 0 0',
+                      transition: 'height 0.3s'
+                    }}
+                    title={`${item.date} (${item.day}): ${item.sessions} session(s)`}
+                  />
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    {item.day}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
         <div style={{ textAlign: 'center', marginTop: '12px', fontSize: '12px', color: 'var(--text-muted)' }}>
-          Past 7 Days Session Activity
+          Past 7 Days Session Activity • Total: {data.totalSevenDaySessions || 0} sessions
         </div>
       </div>
     </div>

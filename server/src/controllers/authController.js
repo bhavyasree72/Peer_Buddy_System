@@ -4,23 +4,40 @@ const { v4: uuidv4 } = require('uuid');
 const { query, withTransaction } = require('../database/db');
 const { generateTokens } = require('../middleware/auth');
 
-// Validation rules from NMIMS doc:
-// - NMIMS email domain only (@nmims.in or @*nmims.edu)
-// - Unique SAP ID & email
-// - Min 8 characters, at least one letter and one number
-// - 5 wrong attempts lock the account for 15 minutes
+// Validation rules from NMIMS specifications:
+// - Student email: must end with @nmims.in
+// - Faculty and Mentor email: must end with @nmims.edu
+// - SAP ID (students): exactly 11 digits, numeric only, starts with 7: ^7\d{10}$
+// - Name: letters and spaces only, min 2 chars
+// - Password: min 8 characters, at least 1 uppercase, 1 lowercase, 1 number, 1 special character
 
-function isValidNMIMSEmail(email) {
+function isValidRoleEmail(email, role) {
   if (!email || typeof email !== 'string') return false;
   const lower = email.trim().toLowerCase();
-  return lower.endsWith('@nmims.in') || lower.endsWith('@nmims.edu') || /@[\w.-]*nmims\.edu$/i.test(lower);
+  if (role === 'student') {
+    return lower.endsWith('@nmims.in');
+  }
+  if (role === 'faculty' || role === 'mentor') {
+    return lower.endsWith('@nmims.edu') || /@[\w.-]*nmims\.edu$/i.test(lower);
+  }
+  return false;
 }
 
-function isValidPassword(password) {
-  if (!password || password.length < 8) return false;
-  const hasLetter = /[a-zA-Z]/.test(password);
-  const hasNumber = /[0-9]/.test(password);
-  return hasLetter && hasNumber;
+function isValidName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  return trimmed.length >= 2 && /^[a-zA-Z\s]+$/.test(trimmed);
+}
+
+function isValidSapId(sapId) {
+  if (!sapId || typeof sapId !== 'string') return false;
+  return /^7\d{10}$/.test(sapId.trim());
+}
+
+function isValidStrongPassword(password) {
+  if (!password || typeof password !== 'string') return false;
+  // min 8 characters, at least 1 uppercase, 1 lowercase, 1 number, 1 special character
+  return /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]).{8,}$/.test(password);
 }
 
 // Helper: SHA-256 hash a plaintext token before storing in database
@@ -29,11 +46,10 @@ function hashToken(rawToken) {
 }
 
 // POST /api/auth/register
-// CHANGE 4: Public registration creates only the permitted default role ('student').
-// Never trust a role supplied by public frontend.
 async function register(req, res) {
   try {
     const {
+      role = 'student',
       fullName,
       sapId,
       email,
@@ -42,25 +58,60 @@ async function register(req, res) {
       programId,
       semester,
       year,
-      mentorId
+      mentorId,
+      department,
+      designation
     } = req.body;
+
+    const requestedRole = ['student', 'faculty', 'mentor'].includes(role) ? role : 'student';
 
     if (!fullName || !email || !password) {
       return res.status(400).json({ error: 'Full name, NMIMS email, and password are required.' });
     }
 
+    if (!isValidName(fullName)) {
+      return res.status(400).json({ error: 'Name must contain letters and spaces only (minimum 2 characters).' });
+    }
+
     const trimmedEmail = email.trim().toLowerCase();
-    if (!isValidNMIMSEmail(trimmedEmail)) {
-      return res.status(400).json({ error: 'Registration is permitted only with an official NMIMS email (e.g. name@nmims.in).' });
+    if (!isValidRoleEmail(trimmedEmail, requestedRole)) {
+      if (requestedRole === 'student') {
+        return res.status(400).json({ error: 'Student registration requires an @nmims.in email address.' });
+      } else {
+        return res.status(400).json({ error: `${requestedRole.charAt(0).toUpperCase() + requestedRole.slice(1)} registration requires an @nmims.edu email address.` });
+      }
     }
 
-    if (!isValidPassword(password)) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long and contain at least one letter and one number.' });
+    if (!isValidStrongPassword(password)) {
+      return res.status(400).json({
+        error: 'Password must be at least 8 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.'
+      });
     }
 
-    // Role enforcement: Public registration always defaults to 'student'.
-    // Mentor, Faculty, and Admin roles must be provisioned by an authorized administrator.
-    const assignedRole = 'student';
+    if (requestedRole === 'student') {
+      if (!sapId) {
+        return res.status(400).json({ error: 'SAP ID is required for student registration.' });
+      }
+      if (!isValidSapId(sapId)) {
+        return res.status(400).json({ error: 'SAP ID must be exactly 11 digits, numeric only, and start with 7 (e.g. 70572400072).' });
+      }
+      if (!semester) {
+        return res.status(400).json({ error: 'Please select a valid semester.' });
+      }
+      if (!schoolId) {
+        return res.status(400).json({ error: 'Please select a valid school.' });
+      }
+      if (!programId) {
+        return res.status(400).json({ error: 'Please select a valid program.' });
+      }
+    } else {
+      if (!department || !department.trim()) {
+        return res.status(400).json({ error: 'Department is required.' });
+      }
+      if (!designation || !designation.trim()) {
+        return res.status(400).json({ error: 'Designation is required.' });
+      }
+    }
 
     // Check unique email
     const existingEmail = await query('SELECT user_id FROM users WHERE email = ?', [trimmedEmail]);
@@ -68,8 +119,8 @@ async function register(req, res) {
       return res.status(400).json({ error: 'An account with this email address already exists.' });
     }
 
-    // Check unique SAP ID if provided
-    if (sapId) {
+    // Check unique SAP ID for students
+    if (requestedRole === 'student' && sapId) {
       const existingSap = await query('SELECT user_id FROM users WHERE sap_id = ?', [sapId.trim()]);
       if (existingSap.rowCount > 0) {
         return res.status(400).json({ error: 'This SAP ID is already registered.' });
@@ -89,22 +140,31 @@ async function register(req, res) {
       await txQuery(
         `INSERT INTO users (user_id, sap_id, email, password_hash, role, status, email_verified)
          VALUES (?, ?, ?, ?, ?, 'active', 1)`,
-        [userId, sapId ? sapId.trim() : null, trimmedEmail, passwordHash, assignedRole]
+        [userId, requestedRole === 'student' ? sapId.trim() : null, trimmedEmail, passwordHash, requestedRole]
       );
 
-      // Student profile
-      await txQuery(
-        `INSERT INTO student_profiles (user_id, full_name, school_id, program_id, semester, year, mentor_id, profile_completeness)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 40)`,
-        [userId, fullName.trim(), schoolId || null, programId || null, semester || 1, year || 1, mentorId || null]
-      );
-
-      // Auto-connect to mentor if selected
-      if (mentorId) {
-        const connectionId = uuidv4();
+      if (requestedRole === 'student') {
+        // Student profile
         await txQuery(
-          `INSERT INTO connections (connection_id, user_a, user_b, status) VALUES (?, ?, ?, 'active')`,
-          [connectionId, userId, mentorId]
+          `INSERT INTO student_profiles (user_id, full_name, school_id, program_id, semester, year, mentor_id, profile_completeness)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 40)`,
+          [userId, fullName.trim(), schoolId || null, programId || null, semester || 1, year || 1, mentorId || null]
+        );
+
+        // Auto-connect to mentor if selected
+        if (mentorId) {
+          const connectionId = uuidv4();
+          await txQuery(
+            `INSERT INTO connections (connection_id, user_a, user_b, status) VALUES (?, ?, ?, 'active')`,
+            [connectionId, userId, mentorId]
+          );
+        }
+      } else {
+        // Staff profile for faculty & mentor
+        await txQuery(
+          `INSERT INTO staff_profiles (user_id, full_name, department, designation)
+           VALUES (?, ?, ?, ?)`,
+          [userId, fullName.trim(), department.trim(), designation.trim()]
         );
       }
 
@@ -117,22 +177,41 @@ async function register(req, res) {
       // Audit log
       await txQuery(
         `INSERT INTO audit_log (log_id, actor_id, action, target, details) VALUES (?, ?, 'USER_REGISTERED', ?, ?)`,
-        [uuidv4(), userId, trimmedEmail, `Student registered: ${fullName.trim()} (${trimmedEmail})`]
+        [uuidv4(), userId, trimmedEmail, `${requestedRole} registered: ${fullName.trim()} (${trimmedEmail})`]
       );
     });
 
+    // Also sync to Supabase Auth if service key configured
+    try {
+      const { supabase } = require('../utils/supabase');
+      if (supabase && supabase.auth && supabase.auth.admin) {
+        await supabase.auth.admin.createUser({
+          email: trimmedEmail,
+          password: password,
+          email_confirm: true,
+          user_metadata: {
+            full_name: fullName.trim(),
+            role: requestedRole,
+            sap_id: requestedRole === 'student' ? sapId.trim() : null
+          }
+        }).catch(err => console.log('Supabase Auth sync note:', err.message));
+      }
+    } catch (e) {
+      // Non-blocking
+    }
+
     // Send confirmation welcome email asynchronously
     const { sendWelcomeEmail } = require('../utils/emailService');
-    await sendWelcomeEmail(trimmedEmail, fullName.trim(), assignedRole).catch(e => console.error(e));
+    await sendWelcomeEmail(trimmedEmail, fullName.trim(), requestedRole).catch(e => console.error(e));
 
     return res.status(201).json({
       message: 'Account created successfully.',
       userId,
-      role: assignedRole
+      role: requestedRole
     });
   } catch (err) {
     console.error('Registration error:', err);
-    return res.status(500).json({ error: 'An error occurred during registration. Please try again.' });
+    return res.status(500).json({ error: err.message || 'An error occurred during registration. Please try again.' });
   }
 }
 
@@ -299,8 +378,10 @@ async function resetPassword(req, res) {
       return res.status(400).json({ error: 'Token and new password are required.' });
     }
 
-    if (!isValidPassword(newPassword)) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long and contain at least one letter and one number.' });
+    if (!isValidStrongPassword(newPassword)) {
+      return res.status(400).json({
+        error: 'Password must be at least 8 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.'
+      });
     }
 
     const tokenHash = hashToken(token.trim());

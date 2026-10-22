@@ -24,12 +24,11 @@ function getPgPool() {
     ? {
         connectionString,
         // Supabase / Render PG requires SSL with rejectUnauthorized: false when self-signed/proxy certs are used
-        ssl: process.env.NODE_ENV === 'production' || connectionString.includes('supabase.co')
-          ? { rejectUnauthorized: false }
-          : false,
+        ssl: { rejectUnauthorized: false },
         max: 20,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000
+        connectionTimeoutMillis: 20000,
+        statement_timeout: 30000
       }
     : {
         host: process.env.DB_HOST || 'localhost',

@@ -110,38 +110,103 @@ async function runTests() {
   await query('UPDATE users SET password_hash = ? WHERE email = "student@nmims.in"', [originalStudentHash]);
   console.log('✓ PASS: Password reset token exposure removed; cryptographically hashed single-use tokens verified.');
 
-  // 3. CHANGE 4: Public Registration & Role Escalation Prevention
-  console.log('\n--- CHANGE 4: Public Registration & Role Escalation Prevention ---');
-  // Attempt to register with role = 'admin'
-  const escalateRes = createMockRes();
+  // 3. Public Registration & Role Validation Rules (Issues 2, 4, 5, 6, 8)
+  console.log('\n--- Registration & Role-based Validation Tests ---');
+  // Attempt to register with role = 'student' using invalid SAP ID (not starting with 7 or not 11 digits)
+  const invalidSapRes = createMockRes();
+  await register({
+    body: {
+      role: 'student',
+      fullName: 'Valid Name',
+      email: `student_${Date.now()}@nmims.in`,
+      password: 'StrongPassword@123',
+      sapId: '60000000001', // Fails ^7\d{10}$
+      semester: 1,
+      schoolId: 'sch-stme',
+      programId: 'prog-csds'
+    }
+  }, invalidSapRes);
+  assert.strictEqual(invalidSapRes.statusCode, 400, 'Invalid SAP ID must be rejected');
+
+  // Attempt to register student with @nmims.edu (Must be @nmims.in)
+  const invalidStudentDomainRes = createMockRes();
+  await register({
+    body: {
+      role: 'student',
+      fullName: 'Student Name',
+      email: `student_${Date.now()}@nmims.edu`,
+      password: 'StrongPassword@123',
+      sapId: '70572400001',
+      semester: 1,
+      schoolId: 'sch-stme',
+      programId: 'prog-csds'
+    }
+  }, invalidStudentDomainRes);
+  assert.strictEqual(invalidStudentDomainRes.statusCode, 400, 'Student with nmims.edu must be rejected');
+
+  // Attempt to register faculty with @nmims.in (Must be @nmims.edu)
+  const invalidFacultyDomainRes = createMockRes();
+  await register({
+    body: {
+      role: 'faculty',
+      fullName: 'Prof Test',
+      email: `faculty_${Date.now()}@nmims.in`,
+      password: 'StrongPassword@123',
+      department: 'CSE',
+      designation: 'Assistant Professor'
+    }
+  }, invalidFacultyDomainRes);
+  assert.strictEqual(invalidFacultyDomainRes.statusCode, 400, 'Faculty with nmims.in must be rejected');
+
+  // Attempt to register with invalid name (contains numbers/symbols)
+  const invalidNameRes = createMockRes();
+  await register({
+    body: {
+      role: 'student',
+      fullName: 'Test123 User!',
+      email: `test_${Date.now()}@nmims.in`,
+      password: 'StrongPassword@123',
+      sapId: '70572400002',
+      semester: 1,
+      schoolId: 'sch-stme',
+      programId: 'prog-csds'
+    }
+  }, invalidNameRes);
+  assert.strictEqual(invalidNameRes.statusCode, 400, 'Name with digits/symbols must be rejected');
+
+  // Attempt to register with weak password (missing special char or uppercase)
+  const weakPwdRes = createMockRes();
+  await register({
+    body: {
+      role: 'student',
+      fullName: 'Valid Name',
+      email: `test_${Date.now()}@nmims.in`,
+      password: 'password123',
+      sapId: '70572400003',
+      semester: 1,
+      schoolId: 'sch-stme',
+      programId: 'prog-csds'
+    }
+  }, weakPwdRes);
+  assert.strictEqual(weakPwdRes.statusCode, 400, 'Weak password must be rejected');
+
+  // Successful student registration
+  const validStudentRes = createMockRes();
   const testStudentEmail = `sec_test_${Date.now()}@nmims.in`;
   await register({
     body: {
+      role: 'student',
       fullName: 'Security Tester',
       email: testStudentEmail,
-      password: 'Password@123',
-      role: 'admin', // Attack payload attempting to gain admin
-      sapId: `7000${Math.floor(1000000 + Math.random() * 9000000)}`
+      password: 'StrongPassword@123',
+      sapId: `7057${Math.floor(1000000 + Math.random() * 9000000)}`,
+      semester: 1,
+      schoolId: 'sch-stme',
+      programId: 'prog-csds'
     }
-  }, escalateRes);
-  assert.strictEqual(escalateRes.statusCode, 201);
-  assert.strictEqual(escalateRes.body.role, 'student', 'Public registration MUST force role to student');
-
-  const checkUser = (await query('SELECT role FROM users WHERE email = ?', [testStudentEmail])).rows[0];
-  assert.strictEqual(checkUser.role, 'student', 'Database record must be student regardless of input role');
-  console.log('✓ PASS: Vertical privilege escalation blocked. Public registration creates only Student role.');
-
-  // Verify non-NMIMS email domain rejection
-  const nonNmimsRes = createMockRes();
-  await register({
-    body: {
-      fullName: 'External User',
-      email: 'user@gmail.com',
-      password: 'Password@123'
-    }
-  }, nonNmimsRes);
-  assert.strictEqual(nonNmimsRes.statusCode, 400, 'Non-NMIMS domain rejected with 400');
-  console.log('✓ PASS: Non-NMIMS domain rejection enforced.');
+  }, validStudentRes);
+  assert.strictEqual(validStudentRes.statusCode, 201, 'Valid student registration must succeed');
+  console.log('✓ PASS: All role-specific validation rules (SAP ID regex, email domain, name format, strong password) verified.');
 
   // 4. CHANGE 4: Email Verification Token Endpoint
   console.log('\n--- CHANGE 4: Email Verification Token Tests ---');

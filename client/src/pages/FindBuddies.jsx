@@ -92,7 +92,7 @@ export default function FindBuddies({ onSelectProfile }) {
           <Search size={18} color="var(--text-muted)" style={{ position: 'absolute', left: '12px', top: '13px' }} />
           <input
             type="text"
-            placeholder="Search by student name, subject, skill or interest..."
+            placeholder="Search by student name, SAP ID, semester, skill or subject..."
             value={filters.q}
             onChange={(e) => setFilters({ ...filters, q: e.target.value })}
             style={{ paddingLeft: '38px', height: '44px' }}
@@ -279,6 +279,11 @@ export default function FindBuddies({ onSelectProfile }) {
                           <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                             {buddy.programName || 'NMIMS Student'} • Sem {buddy.semester}
                           </span>
+                          {buddy.sapId && (
+                            <div style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: '500' }}>
+                              SAP: {buddy.sapId}
+                            </div>
+                          )}
                         </div>
                       </div>
 

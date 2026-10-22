@@ -28,7 +28,6 @@ export default function Sidebar({ user, activePage, setActivePage, unreadCount, 
     { id: 'sessions', label: 'Sessions', icon: Calendar },
     { id: 'resources', label: 'Resources', icon: BookOpen },
     { id: 'history', label: 'History', icon: Clock },
-    { id: 'notifications', label: 'Notifications', icon: Bell, badge: unreadCount },
     { id: 'profile', label: 'Profile', icon: User }
   ];
 

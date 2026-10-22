@@ -15,7 +15,15 @@ CREATE TABLE IF NOT EXISTS users (
   failed_login_attempts INT DEFAULT 0,
   lockout_until TIMESTAMP,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  last_login TIMESTAMP
+  last_login TIMESTAMP,
+  CONSTRAINT chk_sap_id_format CHECK (
+    sap_id IS NULL OR (sap_id ~ '^7[0-9]{10}$')
+  ),
+  CONSTRAINT chk_email_role_domain CHECK (
+    (role = 'student' AND email ILIKE '%@nmims.in') OR
+    (role IN ('faculty', 'mentor') AND (email ILIKE '%@nmims.edu' OR email ~* '@[a-z0-9.-]+\.nmims\.edu$')) OR
+    (role = 'admin')
+  )
 );
 
 -- Indexes specified in doc 6.2
@@ -142,8 +150,13 @@ CREATE TABLE IF NOT EXISTS connections (
   user_b VARCHAR(64) NOT NULL REFERENCES users(user_id),
   status VARCHAR(32) DEFAULT 'active' CHECK(status IN ('active', 'ended')),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  ended_at TIMESTAMP
+  ended_at TIMESTAMP,
+  CONSTRAINT chk_no_self_connection CHECK (user_a != user_b)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_ordered_pair 
+ON connections (LEAST(user_a, user_b), GREATEST(user_a, user_b)) 
+WHERE status = 'active';
 
 -- 12. Messages
 CREATE TABLE IF NOT EXISTS messages (
@@ -174,6 +187,9 @@ CREATE TABLE IF NOT EXISTS study_sessions (
   status VARCHAR(32) DEFAULT 'proposed' CHECK(status IN ('proposed', 'confirmed', 'declined', 'completed', 'cancelled')),
   department VARCHAR(255),
   semester INT DEFAULT 1,
+  confirmed_by_organizer INT DEFAULT 0,
+  confirmed_by_partner INT DEFAULT 0,
+  is_verified INT DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -142,8 +142,12 @@ export default function FacultySessions({ user }) {
                       </span>
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                      <strong style={{ color: '#166534' }}>{s.attendees_count || 0}</strong>
-                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}> / 2 verified</span>
+                      <strong style={{ color: s.attendees_count === 2 ? '#166534' : s.attendees_count === 1 ? '#D97706' : '#9CA3AF' }}>
+                        {s.attendees_count || 0} / 2
+                      </strong>
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block' }}>
+                        {s.attendees_count === 2 ? '✓ Both Confirmed' : s.attendees_count === 1 ? '1 Participant Pending' : 'Unconfirmed'}
+                      </span>
                     </td>
                   </tr>
                 ))}
