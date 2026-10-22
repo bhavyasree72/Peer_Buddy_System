@@ -534,6 +534,65 @@ async function sendEmailDiagnostic(req, res) {
   }
 }
 
+// POST /api/admin/allocate-student
+// Allows an authorized higher authority (Admin) to allocate/reassign a student to a specific mentor
+async function allocateStudentMentor(req, res) {
+  try {
+    const adminId = req.user.userId;
+    const { studentId, mentorId } = req.body;
+
+    if (!studentId || !mentorId) {
+      return res.status(400).json({ error: 'Student ID and Mentor ID are required.' });
+    }
+
+    // Verify student exists and is active student
+    const studentRes = await query('SELECT user_id FROM users WHERE user_id = ? AND role = "student" AND status = "active"', [studentId]);
+    if (studentRes.rowCount === 0) {
+      return res.status(404).json({ error: 'Active student not found.' });
+    }
+
+    // Verify mentor exists and is active mentor
+    const mentorRes = await query('SELECT user_id FROM users WHERE user_id = ? AND role = "mentor" AND status = "active"', [mentorId]);
+    if (mentorRes.rowCount === 0) {
+      return res.status(404).json({ error: 'Active mentor not found.' });
+    }
+
+    // Update student's profile mentor_id
+    await query('UPDATE student_profiles SET mentor_id = ? WHERE user_id = ?', [mentorId, studentId]);
+
+    // Ensure an active connection exists for one-to-one mentoring & chat
+    const existingConn = await query(`
+      SELECT connection_id FROM connections
+      WHERE ((user_a = ? AND user_b = ?) OR (user_a = ? AND user_b = ?)) AND status = 'active'
+    `, [studentId, mentorId, mentorId, studentId]);
+
+    let connectionId = existingConn.rows[0]?.connection_id;
+    if (!connectionId) {
+      connectionId = uuidv4();
+      await query(`
+        INSERT INTO connections (connection_id, user_a, user_b, status)
+        VALUES (?, ?, ?, 'active')
+      `, [connectionId, studentId, mentorId]);
+    }
+
+    // Audit log
+    await query(`
+      INSERT INTO audit_log (log_id, actor_id, action, target, details)
+      VALUES (?, ?, 'STUDENT_MENTOR_ALLOCATED', ?, ?)
+    `, [uuidv4(), adminId, studentId, `Allocated student ${studentId} to mentor ${mentorId}`]);
+
+    return res.json({
+      message: 'Student successfully allocated to mentor.',
+      studentId,
+      mentorId,
+      connectionId
+    });
+  } catch (err) {
+    console.error('allocateStudentMentor error:', err);
+    return res.status(500).json({ error: 'Failed to allocate student to mentor.' });
+  }
+}
+
 module.exports = {
   getAdminDashboard,
   getUsers,
@@ -550,5 +609,7 @@ module.exports = {
   deleteMasterItem,
   getAnnouncements,
   saveAnnouncement,
-  sendEmailDiagnostic
+  sendEmailDiagnostic,
+  allocateStudentMentor
 };
+

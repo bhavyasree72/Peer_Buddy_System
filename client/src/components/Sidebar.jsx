@@ -31,23 +31,23 @@ export default function Sidebar({ user, activePage, setActivePage, unreadCount, 
     { id: 'profile', label: 'Profile', icon: User }
   ];
 
-  // Mentor Navigation from doc 7.2:
-  // Home, Review Requests, My Students, Resources, Messages, Profile
+  // Mentor Navigation: Home, My Students, Sessions, Chat, Resources, Messages, Profile
   const mentorNav = [
     { id: 'home', label: 'Home', icon: Home },
-    { id: 'review-requests', label: 'Review Requests', icon: ShieldAlert },
     { id: 'students', label: 'My Students', icon: Users },
+    { id: 'sessions', label: 'Sessions', icon: Calendar },
+    { id: 'chat', label: 'Chat', icon: MessageSquare },
     { id: 'resources', label: 'Resources', icon: BookOpen },
-    { id: 'messages', label: 'Messages', icon: MessageSquare },
+    { id: 'messages', label: 'Announcements', icon: ShieldAlert },
     { id: 'profile', label: 'Profile', icon: User }
   ];
 
-  // Faculty Navigation from doc 7.2:
-  // Overview, Sessions, Students, Reports, Profile
+  // Faculty Navigation: Overview, Students, Sessions, Chat, Reports, Profile
   const facultyNav = [
     { id: 'home', label: 'Overview', icon: BarChart3 },
-    { id: 'faculty-sessions', label: 'Sessions', icon: Calendar },
     { id: 'students', label: 'Students', icon: Users },
+    { id: 'faculty-sessions', label: 'Sessions', icon: Calendar },
+    { id: 'chat', label: 'Chat', icon: MessageSquare },
     { id: 'reports', label: 'Reports', icon: ShieldAlert },
     { id: 'profile', label: 'Profile', icon: User }
   ];

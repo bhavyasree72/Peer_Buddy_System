@@ -34,27 +34,17 @@ export default function MentorHome({ user, onNavigate }) {
         </p>
       </div>
 
-      {/* Summary Tiles from FIX 4: requests to review, students assigned, resources shared */}
+      {/* Summary Tiles: students assigned, resources shared */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
         gap: '16px',
         marginBottom: '32px'
       }}>
-        <div className="card" style={{ cursor: 'pointer' }} onClick={() => onNavigate && onNavigate('review-requests')}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-            <ShieldAlert size={20} color="#E4574C" />
-            <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Requests to Review</span>
-          </div>
-          <div style={{ fontSize: '26px', fontWeight: '700', color: 'var(--text-main)' }}>
-            {data.summary.requestsToReview}
-          </div>
-        </div>
-
         <div className="card" style={{ cursor: 'pointer' }} onClick={() => onNavigate && onNavigate('students')}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
             <Users size={20} color="#E4574C" />
-            <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Students Assigned</span>
+            <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Students Allocated</span>
           </div>
           <div style={{ fontSize: '26px', fontWeight: '700', color: 'var(--text-main)' }}>
             {data.summary.studentsCount}

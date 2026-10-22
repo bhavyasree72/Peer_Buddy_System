@@ -13,10 +13,17 @@ async function getMentorDashboard(req, res) {
     `);
     const requestsToReview = pendingCountRes.rows[0].c || 0;
 
-    // Active students count
+    // Allocated students count for this specific mentor
     const studentsCountRes = await query(`
-      SELECT COUNT(*) as c FROM users WHERE role = 'student' AND status = 'active'
-    `);
+      SELECT COUNT(*) as c FROM users u
+      JOIN student_profiles sp ON u.user_id = sp.user_id
+      WHERE u.role = 'student' AND u.status = 'active'
+        AND (sp.mentor_id = ? OR EXISTS (
+          SELECT 1 FROM connections c 
+          WHERE ((c.user_a = ? AND c.user_b = u.user_id) OR (c.user_b = ? AND c.user_a = u.user_id)) 
+            AND c.status = 'active'
+        ))
+    `, [mentorId, mentorId, mentorId]);
     const studentsCount = studentsCountRes.rows[0].c || 0;
 
     // Resources shared by this mentor
@@ -130,7 +137,7 @@ async function getReviewRequests(req, res) {
 }
 
 // GET /api/mentor/my-students
-// List of students with search, school and semester filters
+// Strictly returns students allocated to the currently authenticated mentor
 async function getMyStudents(req, res) {
   try {
     const mentorId = req.user.userId;
@@ -145,8 +152,13 @@ async function getMyStudents(req, res) {
       LEFT JOIN programs p ON sp.program_id = p.id
       LEFT JOIN schools s ON sp.school_id = s.id
       WHERE u.role = 'student' AND u.status = 'active'
+        AND (sp.mentor_id = ? OR EXISTS (
+          SELECT 1 FROM connections c 
+          WHERE ((c.user_a = ? AND c.user_b = u.user_id) OR (c.user_b = ? AND c.user_a = u.user_id)) 
+            AND c.status = 'active'
+        ))
     `;
-    const params = [];
+    const params = [mentorId, mentorId, mentorId];
 
     if (schoolId) {
       sql += ' AND sp.school_id = ?';
@@ -161,9 +173,7 @@ async function getMyStudents(req, res) {
       params.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
     }
 
-    // Prioritize students assigned directly to this mentor or connected to this mentor
-    sql += ` ORDER BY (CASE WHEN sp.mentor_id = ? THEN 0 ELSE 1 END), sp.full_name ASC`;
-    params.push(mentorId);
+    sql += ' ORDER BY sp.full_name ASC';
 
     const students = (await query(sql, params)).rows;
     return res.json({ students });

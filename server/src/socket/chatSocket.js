@@ -35,9 +35,22 @@ function setupSocket(io) {
     // Broadcast user online status
     io.emit('user_presence', { userId, status: 'online' });
 
-    // Join a connection room
-    socket.on('join_room', ({ connectionId }) => {
-      socket.join(connectionId);
+    // Join a connection room with server-side authorization check
+    socket.on('join_room', async ({ connectionId }) => {
+      try {
+        const connCheck = await query(`
+          SELECT connection_id FROM connections
+          WHERE connection_id = ? AND (user_a = ? OR user_b = ?) AND status = 'active'
+        `, [connectionId, userId, userId]);
+
+        if (connCheck.rowCount > 0) {
+          socket.join(connectionId);
+        } else {
+          socket.emit('error', { message: 'Unauthorized room access' });
+        }
+      } catch (err) {
+        console.error('Socket join_room error:', err);
+      }
     });
 
     // Leave a connection room
@@ -57,14 +70,30 @@ function setupSocket(io) {
     // Real-time message sending
     socket.on('send_message', async ({ connectionId, body, attachmentUrl, attachmentName, attachmentType }) => {
       try {
+        // Enforce membership check
+        const connCheck = await query(`
+          SELECT connection_id FROM connections
+          WHERE connection_id = ? AND (user_a = ? OR user_b = ?) AND status = 'active'
+        `, [connectionId, userId, userId]);
+
+        if (connCheck.rowCount === 0) {
+          return socket.emit('error', { message: 'Unauthorized: cannot send message to this conversation.' });
+        }
+
         const messageId = uuidv4();
         await query(`
           INSERT INTO messages (message_id, connection_id, sender_id, body, attachment_url, attachment_name, attachment_type, status)
           VALUES (?, ?, ?, ?, ?, ?, ?, 'sent')
         `, [messageId, connectionId, userId, body || '', attachmentUrl || null, attachmentName || null, attachmentType || null]);
 
-        const senderRes = await query('SELECT full_name FROM student_profiles WHERE user_id = ?', [userId]);
-        const senderName = senderRes.rows[0] ? senderRes.rows[0].full_name : 'Student';
+        const senderRes = await query(`
+          SELECT COALESCE(sp.full_name, stp.full_name, u.email, 'NMIMS User') as full_name
+          FROM users u
+          LEFT JOIN student_profiles sp ON u.user_id = sp.user_id
+          LEFT JOIN staff_profiles stp ON u.user_id = stp.user_id
+          WHERE u.user_id = ?
+        `, [userId]);
+        const senderName = senderRes.rows[0] ? senderRes.rows[0].full_name : 'NMIMS User';
 
         const newMsg = {
           message_id: messageId,

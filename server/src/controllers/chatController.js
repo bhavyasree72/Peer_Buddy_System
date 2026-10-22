@@ -9,7 +9,9 @@ async function getConversations(req, res) {
     const connectionsRes = await query(`
       SELECT c.connection_id, c.created_at,
              CASE WHEN c.user_a = ? THEN c.user_b ELSE c.user_a END as buddy_id,
-             sp.full_name as buddy_name, sp.photo_url as buddy_photo,
+             COALESCE(sp.full_name, stp.full_name, u.email, 'NMIMS User') as buddy_name,
+             COALESCE(sp.photo_url, stp.photo_url) as buddy_photo,
+             u.role as buddy_role,
              (
                SELECT body FROM messages 
                WHERE connection_id = c.connection_id 
@@ -27,7 +29,9 @@ async function getConversations(req, res) {
                  AND status != 'read'
              ) as unread_count
       FROM connections c
-      JOIN student_profiles sp ON (CASE WHEN c.user_a = ? THEN c.user_b ELSE c.user_a END) = sp.user_id
+      JOIN users u ON (CASE WHEN c.user_a = ? THEN c.user_b ELSE c.user_a END) = u.user_id
+      LEFT JOIN student_profiles sp ON u.user_id = sp.user_id
+      LEFT JOIN staff_profiles stp ON u.user_id = stp.user_id
       WHERE (c.user_a = ? OR c.user_b = ?) AND c.status = 'active'
       ORDER BY last_message_at DESC NULLS LAST, c.created_at DESC
     `, [userId, userId, userId, userId, userId]);
@@ -45,20 +49,22 @@ async function getMessages(req, res) {
     const userId = req.user.userId;
     const { connectionId } = req.params;
 
-    // Verify user is in connection
+    // Verify user is an authorized participant in connection
     const connCheck = await query(`
       SELECT * FROM connections 
       WHERE connection_id = ? AND (user_a = ? OR user_b = ?) AND status = 'active'
     `, [connectionId, userId, userId]);
 
     if (connCheck.rowCount === 0) {
-      return res.status(403).json({ error: 'Access denied or connection not active.' });
+      return res.status(403).json({ error: 'Access denied: You are not an authorized participant in this private conversation.' });
     }
 
     const messagesRes = await query(`
-      SELECT m.*, sp.full_name as sender_name
+      SELECT m.*, COALESCE(sp.full_name, stp.full_name, u.email, 'NMIMS User') as sender_name
       FROM messages m
-      JOIN student_profiles sp ON m.sender_id = sp.user_id
+      JOIN users u ON m.sender_id = u.user_id
+      LEFT JOIN student_profiles sp ON u.user_id = sp.user_id
+      LEFT JOIN staff_profiles stp ON u.user_id = stp.user_id
       WHERE m.connection_id = ?
       ORDER BY m.sent_at ASC
     `, [connectionId]);
@@ -177,9 +183,61 @@ async function downloadAttachment(req, res) {
   }
 }
 
+// POST /api/chat/start-direct
+// Allows an authorized student to initiate a 1-to-1 conversation with an assigned mentor or faculty member
+async function startDirectConversation(req, res) {
+  try {
+    const senderId = req.user.userId;
+    const { targetUserId } = req.body;
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user ID is required.' });
+    }
+
+    if (senderId === targetUserId) {
+      return res.status(400).json({ error: 'Cannot initiate a conversation with yourself.' });
+    }
+
+    // Verify target user exists and is active
+    const targetRes = await query('SELECT user_id, role, status FROM users WHERE user_id = ? AND status = "active"', [targetUserId]);
+    if (targetRes.rowCount === 0) {
+      return res.status(404).json({ error: 'Target user not found or inactive.' });
+    }
+
+    // Check if an active connection already exists
+    const existingConn = await query(`
+      SELECT connection_id FROM connections
+      WHERE ((user_a = ? AND user_b = ?) OR (user_a = ? AND user_b = ?)) AND status = 'active'
+    `, [senderId, targetUserId, targetUserId, senderId]);
+
+    if (existingConn.rowCount > 0) {
+      return res.json({
+        message: 'Conversation already exists.',
+        connectionId: existingConn.rows[0].connection_id
+      });
+    }
+
+    const connectionId = uuidv4();
+    await query(`
+      INSERT INTO connections (connection_id, user_a, user_b, status)
+      VALUES (?, ?, ?, 'active')
+    `, [connectionId, senderId, targetUserId]);
+
+    return res.status(201).json({
+      message: 'Private conversation opened.',
+      connectionId
+    });
+  } catch (err) {
+    console.error('startDirectConversation error:', err);
+    return res.status(500).json({ error: 'Failed to initiate conversation.' });
+  }
+}
+
 module.exports = {
   getConversations,
   getMessages,
   sendMessage,
-  downloadAttachment
+  downloadAttachment,
+  startDirectConversation
 };
+

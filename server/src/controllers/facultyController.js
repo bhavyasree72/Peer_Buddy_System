@@ -140,12 +140,13 @@ async function getFacultySessions(req, res) {
 }
 
 // GET /api/faculty/students
-// Students list for faculty
+// Students list for faculty with program and semester filtering
 async function getFacultyStudents(req, res) {
   try {
-    const { semester, q } = req.query;
+    const { programId, semester, q } = req.query;
     let sql = `
-      SELECT u.user_id, u.email, sp.full_name, sp.semester, sp.year, p.name as program_name, s.name as school_name,
+      SELECT u.user_id, u.email, sp.full_name, sp.semester, sp.year, sp.program_id, sp.school_id, sp.bio,
+             p.name as program_name, p.code as program_code, s.name as school_name, s.code as school_code,
              (SELECT COUNT(*) FROM study_sessions WHERE organizer_id = u.user_id OR partner_id = u.user_id) as sessions_count
       FROM users u
       JOIN student_profiles sp ON u.user_id = sp.user_id
@@ -155,6 +156,10 @@ async function getFacultyStudents(req, res) {
     `;
     const params = [];
 
+    if (programId) {
+      sql += ' AND (sp.program_id = ? OR p.code = ? OR LOWER(p.name) LIKE ?)';
+      params.push(programId, programId, `%${programId.toLowerCase()}%`);
+    }
     if (semester) {
       sql += ' AND sp.semester = ?';
       params.push(parseInt(semester, 10));

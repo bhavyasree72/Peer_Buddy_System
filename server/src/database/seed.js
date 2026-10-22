@@ -46,12 +46,12 @@ async function seed() {
     }
   }
 
-  // 3. Seed NMIMS Programs
+  // 3. Seed NMIMS Programs (Aligned to permitted schools: STME, SPTM, SOL, SBM, SOC)
   const programs = [
     { id: 'prog-csds', school_id: 'sch-stme', name: 'B.Tech Computer Science & Data Science (CSDS)', code: 'BTECH-CSDS' },
     { id: 'prog-aiml', school_id: 'sch-stme', name: 'B.Tech Artificial Intelligence & Machine Learning', code: 'BTECH-AIML' },
-    { id: 'prog-cse', school_id: 'sch-mpstme', name: 'B.Tech Computer Engineering', code: 'BTECH-CE' },
-    { id: 'prog-it', school_id: 'sch-mpstme', name: 'B.Tech Information Technology', code: 'BTECH-IT' },
+    { id: 'prog-cse', school_id: 'sch-stme', name: 'B.Tech Computer Engineering (CS)', code: 'BTECH-CE' },
+    { id: 'prog-it', school_id: 'sch-stme', name: 'B.Tech Information Technology', code: 'BTECH-IT' },
     { id: 'prog-mba-core', school_id: 'sch-sbm', name: 'MBA Core', code: 'MBA-CORE' },
     { id: 'prog-mba-tech', school_id: 'sch-stme', name: 'MBA Tech Computer Science', code: 'MBA-TECH-CS' }
   ];
@@ -60,6 +60,8 @@ async function seed() {
     const existing = await query('SELECT id FROM programs WHERE id = ?', [p.id]);
     if (existing.rowCount === 0) {
       await query('INSERT INTO programs (id, school_id, name, code) VALUES (?, ?, ?, ?)', [p.id, p.school_id, p.name, p.code]);
+    } else {
+      await query('UPDATE programs SET school_id = ?, name = ?, code = ? WHERE id = ?', [p.school_id, p.name, p.code, p.id]);
     }
   }
 

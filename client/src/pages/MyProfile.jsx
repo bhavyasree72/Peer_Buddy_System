@@ -255,9 +255,11 @@ export default function MyProfile({ user }) {
                 if (semester > maxSem) setSemester(1);
               }}
             >
-              {master.schools && master.schools.map(s => (
-                <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
-              ))}
+              {master.schools && master.schools
+                .filter(s => ['SOL', 'STME', 'SPTM', 'SOC', 'SBM'].includes((s.code || '').toUpperCase()))
+                .map(s => (
+                  <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
+                ))}
             </select>
           </div>
 

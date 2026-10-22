@@ -138,21 +138,6 @@ export default function ActivityHistory({ user }) {
         </button>
 
         <button
-          onClick={() => setActiveTab('chats')}
-          style={{
-            border: 'none',
-            borderBottom: activeTab === 'chats' ? '2px solid var(--accent)' : '2px solid transparent',
-            backgroundColor: 'transparent',
-            color: activeTab === 'chats' ? 'var(--accent)' : 'var(--text-main)',
-            fontWeight: activeTab === 'chats' ? '600' : '500',
-            borderRadius: 0,
-            padding: '10px 16px'
-          }}
-        >
-          Conversations
-        </button>
-
-        <button
           onClick={() => setActiveTab('feedback')}
           style={{
             border: 'none',
@@ -241,32 +226,7 @@ export default function ActivityHistory({ user }) {
           )
         )}
 
-        {activeTab === 'chats' && (
-          data.chats.length === 0 ? (
-            <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-muted)' }}>No chat history available.</div>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
-              <thead>
-                <tr style={{ backgroundColor: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)' }}>
-                  <th style={{ padding: '12px 16px' }}>Buddy</th>
-                  <th style={{ padding: '12px 16px' }}>Total Messages Exchanged</th>
-                  <th style={{ padding: '12px 16px' }}>Last Message Activity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.chats.map(c => (
-                  <tr key={c.connection_id} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '12px 16px', fontWeight: '500' }}>{c.buddy_name}</td>
-                    <td style={{ padding: '12px 16px' }}>{c.total_messages} messages</td>
-                    <td style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>
-                      {c.last_activity ? new Date(c.last_activity).toLocaleString() : 'Never'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )
-        )}
+
 
         {activeTab === 'feedback' && (
           data.feedback.length === 0 ? (

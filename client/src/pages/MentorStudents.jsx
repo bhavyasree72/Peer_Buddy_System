@@ -74,10 +74,12 @@ export default function MentorStudents({ user, onSelectProfile }) {
           onChange={(e) => setFilters({ ...filters, schoolId: e.target.value, semester: '' })}
           style={{ height: '42px', minWidth: '160px' }}
         >
-          <option value="">All Schools</option>
-          {master.schools && master.schools.map(s => (
-            <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
-          ))}
+          <option value="">All Permitted Schools</option>
+          {master.schools && master.schools
+            .filter(s => ['SOL', 'STME', 'SPTM', 'SOC', 'SBM'].includes((s.code || '').toUpperCase()))
+            .map(s => (
+              <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
+            ))}
         </select>
 
         <select
@@ -133,13 +135,31 @@ export default function MentorStudents({ user, onSelectProfile }) {
                       <span className="badge-neutral badge">{s.active_buddies_count || 0} connections</span>
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                      <button
-                        className="btn-secondary"
-                        style={{ padding: '6px 12px', fontSize: '12px', minHeight: '32px' }}
-                        onClick={() => handleViewProfile(s.user_id)}
-                      >
-                        <Eye size={14} /> View Profile
-                      </button>
+                      <div style={{ display: 'inline-flex', gap: '6px' }}>
+                        <button
+                          className="btn-secondary"
+                          style={{ padding: '6px 10px', fontSize: '12px', minHeight: '32px' }}
+                          onClick={() => handleViewProfile(s.user_id)}
+                        >
+                          <Eye size={14} /> Profile
+                        </button>
+                        {onNavigateChat && (
+                          <button
+                            className="btn-primary"
+                            style={{ padding: '6px 10px', fontSize: '12px', minHeight: '32px' }}
+                            onClick={async () => {
+                              try {
+                                const direct = await api.apiRequest('/chat/start-direct', 'POST', { targetUserId: s.user_id });
+                                onNavigateChat(direct.connectionId);
+                              } catch (e) {
+                                alert(e.message || 'Could not start chat');
+                              }
+                            }}
+                          >
+                            Chat
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -192,10 +212,27 @@ export default function MentorStudents({ user, onSelectProfile }) {
               </div>
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
               <button className="btn-secondary" onClick={() => setViewingProfile(null)}>
                 Close
               </button>
+              {onNavigateChat && (
+                <button
+                  className="btn-primary"
+                  onClick={async () => {
+                    const targetId = viewingProfile.profile?.user_id;
+                    setViewingProfile(null);
+                    try {
+                      const direct = await api.apiRequest('/chat/start-direct', 'POST', { targetUserId: targetId });
+                      onNavigateChat(direct.connectionId);
+                    } catch (e) {
+                      alert(e.message || 'Could not start chat');
+                    }
+                  }}
+                >
+                  Start Private Chat
+                </button>
+              )}
             </div>
           </div>
         </div>

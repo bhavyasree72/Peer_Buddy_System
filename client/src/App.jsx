@@ -182,11 +182,34 @@ export default function App() {
         {currentUser.role === 'mentor' && (
           <>
             {activePage === 'home' && <MentorHome user={currentUser} onNavigate={setActivePage} />}
-            {activePage === 'review-requests' && <MentorReviewRequests user={currentUser} />}
-            {activePage === 'students' && <MentorStudents user={currentUser} onSelectProfile={handleSelectProfile} />}
+            {activePage === 'students' && <MentorStudents user={currentUser} onSelectProfile={handleSelectProfile} onNavigateChat={handleNavigateChat} />}
+            {activePage === 'sessions' && (
+              <SessionsPage
+                initialPartnerId={scheduleData.partnerId}
+                initialConnId={scheduleData.connectionId}
+                onOpenRateModal={(sessionId, title) => setRateModalData({ sessionId, title })}
+              />
+            )}
+            {activePage === 'chat' && (
+              <ChatPage
+                initialConnectionId={chatConnectionId}
+                onNavigateSchedule={handleNavigateSchedule}
+                onSelectProfile={handleSelectProfile}
+                onOpenReport={handleOpenReport}
+              />
+            )}
             {activePage === 'resources' && <ResourcesPage user={currentUser} />}
             {activePage === 'messages' && <MentorMessages user={currentUser} />}
             {activePage === 'profile' && <MyProfile user={currentUser} />}
+            {activePage === 'view-profile' && (
+              <BuddyProfileView
+                userId={selectedProfileId}
+                onBack={() => setActivePage('students')}
+                onNavigateChat={handleNavigateChat}
+                onNavigateSchedule={handleNavigateSchedule}
+                onOpenReport={handleOpenReport}
+              />
+            )}
           </>
         )}
 
@@ -195,9 +218,26 @@ export default function App() {
           <>
             {activePage === 'home' && <FacultyOverview user={currentUser} />}
             {activePage === 'faculty-sessions' && <FacultySessions user={currentUser} />}
-            {activePage === 'students' && <FacultyStudents user={currentUser} />}
+            {activePage === 'students' && <FacultyStudents user={currentUser} onNavigateChat={handleNavigateChat} />}
+            {activePage === 'chat' && (
+              <ChatPage
+                initialConnectionId={chatConnectionId}
+                onNavigateSchedule={handleNavigateSchedule}
+                onSelectProfile={handleSelectProfile}
+                onOpenReport={handleOpenReport}
+              />
+            )}
             {activePage === 'reports' && <FacultyReports user={currentUser} />}
             {activePage === 'profile' && <MyProfile user={currentUser} />}
+            {activePage === 'view-profile' && (
+              <BuddyProfileView
+                userId={selectedProfileId}
+                onBack={() => setActivePage('students')}
+                onNavigateChat={handleNavigateChat}
+                onNavigateSchedule={handleNavigateSchedule}
+                onOpenReport={handleOpenReport}
+              />
+            )}
           </>
         )}
 

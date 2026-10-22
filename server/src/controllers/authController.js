@@ -101,6 +101,11 @@ async function register(req, res) {
       if (!schoolId) {
         return res.status(400).json({ error: 'Please select a valid school.' });
       }
+      // Phase 6: Strictly validate school against permitted NMIMS schools
+      const allowedSchoolRes = await query('SELECT code FROM schools WHERE id = ? OR code = ?', [schoolId, schoolId]);
+      if (allowedSchoolRes.rowCount === 0 || !['SOL', 'STME', 'SPTM', 'SOC', 'SBM'].includes((allowedSchoolRes.rows[0].code || '').toUpperCase())) {
+        return res.status(400).json({ error: 'Selected school is not valid. Permitted schools: SOL, STME, SPTM, SOC, SBM.' });
+      }
       if (!programId) {
         return res.status(400).json({ error: 'Please select a valid program.' });
       }
