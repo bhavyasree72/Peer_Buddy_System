@@ -2,8 +2,13 @@
 
 An intra-college peer mentorship and study partner collaboration platform designed exclusively for NMIMS students, mentors, faculty, and administrators. Built strictly according to the **NMIMS Application Design Document** with modern Supabase PostgreSQL backend integration and production deployment on Render.
 
-Deployed API: `https://peer-buddy-api.onrender.com/`  
-GitHub Repository: `https://github.com/bhavyasree72/Peer_Buddy_System`
+---
+
+### 🌐 Live Deployment Links
+
+- **🚀 Live Web Application**: [https://peer-buddy-api.onrender.com/](https://peer-buddy-api.onrender.com/)
+- **⚡ Backend API Endpoint**: `https://peer-buddy-api.onrender.com/api`
+- **📦 GitHub Repository**: [https://github.com/bhavyasree72/Peer_Buddy_System](https://github.com/bhavyasree72/Peer_Buddy_System)
 
 ---
 
