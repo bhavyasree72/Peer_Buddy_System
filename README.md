@@ -30,12 +30,19 @@ An intra-college peer mentorship and study partner collaboration platform design
 - **Multi-Buddy Search & Connections**:
   - Search lists all registered students (excluding self) with multi-criteria filtering by name, SAP ID, and semester.
   - Many-to-many buddy connections (students can connect with multiple peers) with order-independent uniqueness enforced via `LEAST(user_a, user_b), GREATEST(user_a, user_b)`.
-- **Dual Session Confirmation & Real Faculty Attendance**:
-  - Attendance % calculated as `(verified sessions attended / total scheduled sessions) * 100` (shows `N/A` or `0%` if no sessions exist, never a default 100%).
-  - Both participants must confirm attendance for a session to become verified (`2 / 2`).
-  - Faculty dashboard charts the last 7 days of session activity converted to Indian Standard Time (IST) with a proper empty state.
-- **Streamlined Student Navigation**:
-  - Removed redundant Notifications section from student routes, sidebar, and polling without breaking navigation.
+- **Private One-to-One Chat (Student, Mentor & Faculty)**:
+  - Strict participant authentication on REST API (`/api/chat/messages/:connectionId`) and Socket.IO rooms preventing unauthorized message snooping.
+  - Direct 1-to-1 conversation creation (`POST /api/chat/start-direct`) between students and assigned mentors or faculty.
+  - Chat access directly available in Mentor and Faculty sidebars.
+- **Faculty Dashboard & Dependent Student Filtering**:
+  - Dependent Program and Semester dropdowns dynamically calculate semester ranges per school program.
+  - Student Profile View Modal displaying comprehensive academic info, bio, skills, and interests.
+- **Mentor Student Allocation & Resource Management**:
+  - Mentor overview and student directory restricted strictly to allocated mentees (`student_profiles.mentor_id` or active mentor connections).
+  - Dedicated administrative endpoint (`POST /api/admin/allocate-student`) for authorized student-to-mentor assignment.
+- **Streamlined Navigation & Standardized Schools**:
+  - School selection across registration, profiles, and directories strictly standardized to 5 approved NMIMS schools (`SOL`, `STME`, `SPTM`, `SOC`, `SBM`).
+  - Simplified Student Activity History by removing redundant conversation tables while retaining Buddies, Sessions, and Feedback.
 
 ---
 
