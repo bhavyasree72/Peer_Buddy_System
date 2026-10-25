@@ -6,6 +6,7 @@ export default function AuthPage({ onLoginSuccess }) {
   const [isRegister, setIsRegister] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [forgotMode, setForgotMode] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
   const [master, setMaster] = useState({ schools: [], programs: [], mentors: [] });
 
   // Login form state - ISOLATED per role (Student, Faculty, Mentor)
@@ -317,16 +318,17 @@ export default function AuthPage({ onLoginSuccess }) {
 
   async function handleForgotPassword(e) {
     e.preventDefault();
-    if (!email) {
-      setError('Please provide your official NMIMS email address.');
+    if (!forgotEmail) {
+      setError('Please provide your registered Gmail address.');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      const res = await api.forgotPassword(email);
+      const res = await api.forgotPassword(forgotEmail);
       setMessage(res.message);
       setForgotMode(false);
+      setForgotEmail('');
     } catch (err) {
       setError(err.message);
     } finally {
@@ -526,14 +528,14 @@ export default function AuthPage({ onLoginSuccess }) {
               </p>
               
               <div style={{ marginBottom: '16px' }}>
-                <label>Registered Email Address</label>
+                <label>Registered Gmail Address</label>
                 <input
                   type="email"
                   id="forgot_email"
                   name="forgot_email"
-                  placeholder="Enter your registered email address"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Enter your registered Gmail address"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
                   required
                 />
               </div>
@@ -541,7 +543,7 @@ export default function AuthPage({ onLoginSuccess }) {
               <button type="submit" className="btn-primary" style={{ width: '100%', marginBottom: '12px' }} disabled={loading}>
                 {loading ? 'Sending link...' : 'Send reset link'}
               </button>
-              <button type="button" className="btn-secondary" style={{ width: '100%' }} onClick={() => setForgotMode(false)}>
+              <button type="button" className="btn-secondary" style={{ width: '100%' }} onClick={() => { setForgotMode(false); setError(''); }}>
                 Back to login
               </button>
             </form>
