@@ -189,6 +189,8 @@ label {
   display: flex;
   min-height: 100vh;
   width: 100%;
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 
 .sidebar {
@@ -209,22 +211,81 @@ label {
   padding: 32px;
   max-width: 1200px;
   min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 @media (max-width: 768px) {
-  .sidebar {
+  .app-container {
+    flex-direction: column;
+    overflow-x: hidden;
     width: 100%;
-    height: 60px;
-    top: auto;
+  }
+
+  .sidebar-header,
+  .sidebar-role,
+  .sidebar-footer {
+    display: none !important;
+  }
+
+  .sidebar {
+    position: fixed;
     bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 64px;
+    top: auto;
     border-right: none;
     border-top: 1px solid var(--border);
     flex-direction: row;
-    justify-content: space-around;
+    align-items: center;
+    background-color: #FFFFFF;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+    z-index: 1000;
+    padding: 0;
   }
+
+  .sidebar nav {
+    width: 100%;
+    padding: 0 !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .sidebar nav ul {
+    flex-direction: row !important;
+    justify-content: space-around !important;
+    gap: 2px !important;
+    padding: 4px 6px !important;
+    margin: 0 !important;
+    width: 100%;
+  }
+
+  .sidebar nav button {
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 6px 4px !important;
+    min-height: 52px !important;
+    font-size: 11px !important;
+    gap: 2px !important;
+  }
+
+  .sidebar nav button span {
+    font-size: 10px !important;
+    line-height: 1 !important;
+    text-align: center !important;
+  }
+
   .main-content {
-    margin-left: 0;
-    margin-bottom: 70px;
-    padding: 16px;
+    margin-left: 0 !important;
+    margin-bottom: 74px !important;
+    padding: 16px !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    box-sizing: border-box !important;
+    overflow-x: hidden !important;
   }
 }

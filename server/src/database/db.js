@@ -25,9 +25,9 @@ function getPgPool() {
         connectionString,
         // Supabase / Render PG requires SSL with rejectUnauthorized: false when self-signed/proxy certs are used
         ssl: { rejectUnauthorized: false },
-        max: 20,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 20000,
+        max: 5,
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 8000,
         statement_timeout: 30000
       }
     : {
@@ -36,9 +36,9 @@ function getPgPool() {
         database: process.env.DB_NAME || 'peer_buddy',
         user: process.env.DB_USER || 'postgres',
         password: process.env.DB_PASSWORD || 'postgres',
-        max: 20,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000
+        max: 5,
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 8000
       };
 
   pgPool = new Pool(poolConfig);
@@ -84,6 +84,7 @@ function convertPlaceholdersToPg(sql) {
 }
 
 function normalizeSqlForEngine(sql, isPg) {
+  // NOTE: New SQL must not use double-quoted strings for literals. Use single quotes or parameterized queries.
   let res = sql;
   if (isPg) {
     // Convert ? to $1, $2, ...
@@ -93,6 +94,8 @@ function normalizeSqlForEngine(sql, isPg) {
     // Replace SQLite double-quoted literals like "student" with 'student' where needed in standard queries
     res = res.replace(/="([^"]+)"/g, "='$1'");
     res = res.replace(/!= "([^"]+)"/g, "!= '$1'");
+    res = res.replace(/=\s*"([^"]+)"/g, "='$1'");
+    res = res.replace(/!=\s*"([^"]+)"/g, "!= '$1'");
     res = res.replace(/IN \("([^"]+)"/g, "IN ('$1'");
     res = res.replace(/, "([^"]+)"\)/g, ", '$1')");
   } else {

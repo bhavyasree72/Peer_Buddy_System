@@ -14,9 +14,14 @@ const { generateTokens } = require('../middleware/auth');
 function isValidRoleEmail(email, role) {
   if (!email || typeof email !== 'string') return false;
   const lower = email.trim().toLowerCase();
-  // Registration strictly requires valid @gmail.com address for student, faculty, and mentor
-  // Strict regex: username followed exactly by @gmail.com without extra subdomains or suffix
-  return /^[a-zA-Z0-9._%+-]+@gmail\.com$/.test(lower);
+
+  // Explicitly reject @nmims.in, @nmims.edu or any non-gmail address
+  if (lower.endsWith('@nmims.in') || lower.endsWith('@nmims.edu')) {
+    return false;
+  }
+
+  // Every role accepts only username@gmail.com
+  return /^[a-zA-Z0-9._%+-]+@gmail\.com$/i.test(lower);
 }
 
 function isValidName(name) {
@@ -62,7 +67,7 @@ async function register(req, res) {
     const requestedRole = ['student', 'faculty', 'mentor'].includes(role) ? role : 'student';
 
     if (!fullName || !email || !password) {
-      return res.status(400).json({ error: 'Full name, NMIMS email, and password are required.' });
+      return res.status(400).json({ error: 'Full name, Gmail address, and password are required.' });
     }
 
     if (!isValidName(fullName)) {

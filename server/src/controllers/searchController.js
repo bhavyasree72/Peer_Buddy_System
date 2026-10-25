@@ -1,18 +1,12 @@
 const { query } = require('../database/db');
 
-// Calculate match score between two students according to doc:
-// Shared skills and subjects: 40
-// Complementary needs (one can help, other wants to learn): 25
-// Overlapping availability: 20
-// Same school or semester: 10
-// Rating: 5
-async function calculateMatchScore(studentA, studentB, weights) {
+// Calculate match score between two students in-memory
+function scoreStudents(studentA, studentB, skillsMap, wantsMap, availMap, weights) {
   let score = 0;
   const reasons = [];
 
-  // 1. Shared Skills (type = 'has')
-  const skillsA = (await query('SELECT skill_id FROM user_skills WHERE user_id = ? AND type = "has"', [studentA.user_id])).rows.map(r => r.skill_id);
-  const skillsB = (await query('SELECT skill_id FROM user_skills WHERE user_id = ? AND type = "has"', [studentB.user_id])).rows.map(r => r.skill_id);
+  const skillsA = skillsMap[studentA.user_id] || [];
+  const skillsB = skillsMap[studentB.user_id] || [];
   const sharedSkills = skillsA.filter(id => skillsB.includes(id));
 
   if (sharedSkills.length > 0) {
@@ -21,9 +15,8 @@ async function calculateMatchScore(studentA, studentB, weights) {
     reasons.push(`${sharedSkills.length} shared skill(s)`);
   }
 
-  // 2. Complementary Needs: A has what B wants, or B has what A wants
-  const wantsA = (await query('SELECT skill_id FROM user_skills WHERE user_id = ? AND type = "wants_to_learn"', [studentA.user_id])).rows.map(r => r.skill_id);
-  const wantsB = (await query('SELECT skill_id FROM user_skills WHERE user_id = ? AND type = "wants_to_learn"', [studentB.user_id])).rows.map(r => r.skill_id);
+  const wantsA = wantsMap[studentA.user_id] || [];
+  const wantsB = wantsMap[studentB.user_id] || [];
 
   const compA = skillsA.filter(id => wantsB.includes(id));
   const compB = skillsB.filter(id => wantsA.includes(id));
@@ -35,9 +28,8 @@ async function calculateMatchScore(studentA, studentB, weights) {
     reasons.push('Complementary study goals');
   }
 
-  // 3. Overlapping Availability
-  const availA = (await query('SELECT day_of_week, start_time, end_time FROM availability WHERE user_id = ?', [studentA.user_id])).rows;
-  const availB = (await query('SELECT day_of_week, start_time, end_time FROM availability WHERE user_id = ?', [studentB.user_id])).rows;
+  const availA = availMap[studentA.user_id] || [];
+  const availB = availMap[studentB.user_id] || [];
 
   const overlapDays = [];
   for (const slotA of availA) {
@@ -56,7 +48,6 @@ async function calculateMatchScore(studentA, studentB, weights) {
     reasons.push(`Free on ${overlapDays.slice(0, 2).join(' & ')}`);
   }
 
-  // 4. Same School or Semester
   let schoolSemScore = 0;
   if (studentA.school_id && studentA.school_id === studentB.school_id) {
     schoolSemScore += (weights.school_sem / 2);
@@ -69,7 +60,6 @@ async function calculateMatchScore(studentA, studentB, weights) {
     if (studentA.semester === studentB.semester) reasons.push(`Both in Semester ${studentA.semester}`);
   }
 
-  // 5. Rating weight
   if (studentB.avg_rating && studentB.avg_rating > 0) {
     const ratingScore = Math.min(weights.rating, (studentB.avg_rating / 5) * weights.rating);
     score += ratingScore;
@@ -86,7 +76,7 @@ async function searchBuddies(req, res) {
   try {
     const currentUserId = req.user.userId;
     const {
-      q, // keyword: name, skill, interest
+      q,
       schoolId,
       programId,
       semester,
@@ -95,16 +85,14 @@ async function searchBuddies(req, res) {
       dayOfWeek,
       studyMode,
       minRating,
-      sortBy = 'best_match', // best_match, highest_rating, recently_active
+      sortBy = 'best_match',
       page = 1,
       limit = 12
     } = req.query;
 
-    // Get current user profile for matching
     const currentUserRes = await query('SELECT * FROM student_profiles WHERE user_id = ?', [currentUserId]);
     const currentStudent = currentUserRes.rows[0] || { user_id: currentUserId };
 
-    // Get weights from settings
     const settingsRows = (await query('SELECT key, value FROM settings')).rows;
     const weights = {
       skills: 40,
@@ -121,7 +109,6 @@ async function searchBuddies(req, res) {
       if (s.key === 'weight_rating') weights.rating = parseInt(s.value, 10);
     });
 
-    // Query active registered students, excluding self (Issue 10)
     let sql = `
       SELECT u.user_id, u.sap_id, u.email, u.last_login,
              sp.full_name, sp.school_id, sp.program_id, sp.semester, sp.year, sp.bio, sp.photo_url, sp.study_mode,
@@ -156,36 +143,102 @@ async function searchBuddies(req, res) {
       params.push(parseInt(semester, 10));
     }
     if (studyMode && studyMode !== 'all') {
-      sql += ' AND (sp.study_mode = ? OR sp.study_mode = "both")';
+      sql += " AND (sp.study_mode = ? OR sp.study_mode = 'both')";
       params.push(studyMode);
     }
 
     const baseResults = (await query(sql, params)).rows;
 
-    // Filter and compute match score for each student
+    if (baseResults.length === 0) {
+      return res.json({
+        buddies: [],
+        pagination: { page: 1, limit: parseInt(limit, 10) || 12, total: 0, totalPages: 1 }
+      });
+    }
+
+    const allUserIds = [currentUserId, ...baseResults.map(s => s.user_id)];
+
+    // Batch load skills, interests, availability, connections, and requests
+    const skillsRes = await query(`
+      SELECT us.user_id, us.skill_id, us.type, us.level, sk.name
+      FROM user_skills us
+      JOIN skills sk ON us.skill_id = sk.skill_id
+      WHERE us.user_id = ANY(?)
+    `, [allUserIds]);
+
+    const interestsRes = await query(`
+      SELECT ui.user_id, ui.interest_id, it.name
+      FROM user_interests ui
+      JOIN interests it ON ui.interest_id = it.interest_id
+      WHERE ui.user_id = ANY(?)
+    `, [allUserIds]);
+
+    const availRes = await query(`
+      SELECT user_id, day_of_week, start_time, end_time
+      FROM availability
+      WHERE user_id = ANY(?)
+    `, [allUserIds]);
+
+    const connsRes = await query(`
+      SELECT user_a, user_b FROM connections
+      WHERE (user_a = ? OR user_b = ?) AND status = 'active'
+    `, [currentUserId, currentUserId]);
+
+    const requestsRes = await query(`
+      SELECT sender_id, receiver_id, status FROM buddy_requests
+      WHERE (sender_id = ? OR receiver_id = ?) AND status = 'pending'
+    `, [currentUserId, currentUserId]);
+
+    // Build lookup caches
+    const skillsMap = {};
+    const wantsMap = {};
+    const skillObjsMap = {};
+    const interestsMap = {};
+    const availMap = {};
+
+    allUserIds.forEach(id => {
+      skillsMap[id] = [];
+      wantsMap[id] = [];
+      skillObjsMap[id] = [];
+      interestsMap[id] = [];
+      availMap[id] = [];
+    });
+
+    skillsRes.rows.forEach(r => {
+      if (r.type === 'has') {
+        skillsMap[r.user_id].push(r.skill_id);
+        skillObjsMap[r.user_id].push(r);
+      } else {
+        wantsMap[r.user_id].push(r.skill_id);
+      }
+    });
+
+    interestsRes.rows.forEach(r => {
+      interestsMap[r.user_id].push(r);
+    });
+
+    availRes.rows.forEach(r => {
+      availMap[r.user_id].push(r);
+    });
+
+    const activePartners = new Set();
+    connsRes.rows.forEach(c => {
+      activePartners.add(c.user_a === currentUserId ? c.user_b : c.user_a);
+    });
+
+    const pendingReqMap = {};
+    requestsRes.rows.forEach(r => {
+      const partner = r.sender_id === currentUserId ? r.receiver_id : r.sender_id;
+      pendingReqMap[partner] = { isOutgoing: r.sender_id === currentUserId };
+    });
+
     let results = [];
     for (const student of baseResults) {
-      // Get skills
-      const studentSkills = (await query(`
-        SELECT sk.skill_id, sk.name, us.type, us.level
-        FROM user_skills us
-        JOIN skills sk ON us.skill_id = sk.skill_id
-        WHERE us.user_id = ?
-      `, [student.user_id])).rows;
+      const studentSkills = skillObjsMap[student.user_id] || [];
+      const studentInterests = interestsMap[student.user_id] || [];
+      const studentAvail = availMap[student.user_id] || [];
+      const days = [...new Set(studentAvail.map(a => a.day_of_week))];
 
-      // Get interests
-      const studentInterests = (await query(`
-        SELECT it.interest_id, it.name
-        FROM user_interests ui
-        JOIN interests it ON ui.interest_id = it.interest_id
-        WHERE ui.user_id = ?
-      `, [student.user_id])).rows;
-
-      // Get availability days
-      const availabilitySlots = (await query('SELECT DISTINCT day_of_week FROM availability WHERE user_id = ?', [student.user_id])).rows;
-      const days = availabilitySlots.map(a => a.day_of_week);
-
-      // Keyword filter: check name, SAP ID, semester, skills, interests (Issue 10)
       if (q && q.trim()) {
         const queryTerm = q.trim().toLowerCase();
         const matchesName = student.full_name && student.full_name.toLowerCase().includes(queryTerm);
@@ -198,43 +251,27 @@ async function searchBuddies(req, res) {
         }
       }
 
-      // Skill filter
       if (skillId && !studentSkills.some(s => s.skill_id === skillId)) {
         continue;
       }
 
-      // Interest filter
       if (interestId && !studentInterests.some(it => it.interest_id === interestId)) {
         continue;
       }
 
-      // Day of week filter
       if (dayOfWeek && !days.includes(dayOfWeek)) {
         continue;
       }
 
-      // Minimum rating filter
       const rating = student.review_count >= 3 ? parseFloat(student.avg_rating) : null;
       if (minRating && (rating === null || rating < parseFloat(minRating))) {
         continue;
       }
 
-      // Check existing connection or pending request status
-      const connRes = await query(`
-        SELECT connection_id FROM connections
-        WHERE ((user_a = ? AND user_b = ?) OR (user_a = ? AND user_b = ?)) AND status = 'active'
-      `, [currentUserId, student.user_id, student.user_id, currentUserId]);
-      const isConnected = connRes.rowCount > 0;
+      const isConnected = activePartners.has(student.user_id);
+      const pendingRequest = pendingReqMap[student.user_id] || null;
 
-      const reqRes = await query(`
-        SELECT status, sender_id FROM buddy_requests
-        WHERE ((sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?))
-          AND status = 'pending'
-      `, [currentUserId, student.user_id, student.user_id, currentUserId]);
-      const pendingRequest = reqRes.rowCount > 0 ? reqRes.rows[0] : null;
-
-      // Calculate match score
-      const { score, matchReason } = await calculateMatchScore(currentStudent, student, weights);
+      const { score, matchReason } = scoreStudents(currentStudent, student, skillsMap, wantsMap, availMap, weights);
 
       results.push({
         userId: student.user_id,
@@ -248,29 +285,24 @@ async function searchBuddies(req, res) {
         studyMode: student.study_mode,
         rating: rating ? rating.toFixed(1) : null,
         reviewCount: student.review_count,
-        skills: studentSkills.filter(s => s.type === 'has').slice(0, 3),
+        skills: studentSkills.slice(0, 3),
         availableDays: days.slice(0, 3).join(', '),
         matchPercentage: score,
         matchReason,
         isConnected,
-        pendingRequest: pendingRequest ? {
-          isOutgoing: pendingRequest.sender_id === currentUserId
-        } : null,
+        pendingRequest,
         lastLogin: student.last_login
       });
     }
 
-    // Sort results
     if (sortBy === 'highest_rating') {
       results.sort((a, b) => (parseFloat(b.rating) || 0) - (parseFloat(a.rating) || 0));
     } else if (sortBy === 'recently_active') {
       results.sort((a, b) => new Date(b.lastLogin || 0) - new Date(a.lastLogin || 0));
     } else {
-      // Default: best_match
       results.sort((a, b) => b.matchPercentage - a.matchPercentage);
     }
 
-    // Pagination (12 results per page from doc)
     const pageNum = parseInt(page, 10) || 1;
     const pageSize = parseInt(limit, 10) || 12;
     const total = results.length;
@@ -318,17 +350,57 @@ async function getSuggestedBuddies(req, res) {
         )
     `, [currentUserId, currentUserId, currentUserId, currentUserId])).rows;
 
+    if (candidates.length === 0) {
+      return res.json({ suggestions: [] });
+    }
+
+    const allUserIds = [currentUserId, ...candidates.map(c => c.user_id)];
+
+    const skillsRes = await query(`
+      SELECT us.user_id, us.skill_id, us.type, sk.name
+      FROM user_skills us
+      JOIN skills sk ON us.skill_id = sk.skill_id
+      WHERE us.user_id = ANY(?)
+    `, [allUserIds]);
+
+    const availRes = await query(`
+      SELECT user_id, day_of_week, start_time, end_time
+      FROM availability
+      WHERE user_id = ANY(?)
+    `, [allUserIds]);
+
+    const skillsMap = {};
+    const wantsMap = {};
+    const skillNamesMap = {};
+    const availMap = {};
+
+    allUserIds.forEach(id => {
+      skillsMap[id] = [];
+      wantsMap[id] = [];
+      skillNamesMap[id] = [];
+      availMap[id] = [];
+    });
+
+    skillsRes.rows.forEach(r => {
+      if (r.type === 'has') {
+        skillsMap[r.user_id].push(r.skill_id);
+        skillNamesMap[r.user_id].push(r.name);
+      } else {
+        wantsMap[r.user_id].push(r.skill_id);
+      }
+    });
+
+    availRes.rows.forEach(r => {
+      availMap[r.user_id].push(r);
+    });
+
     const weights = { skills: 40, complementary: 25, availability: 20, school_sem: 10, rating: 5 };
     const suggestions = [];
 
     for (const cand of candidates) {
-      const skills = (await query(`
-        SELECT sk.name FROM user_skills us JOIN skills sk ON us.skill_id = sk.skill_id
-        WHERE us.user_id = ? AND us.type = 'has' LIMIT 2
-      `, [cand.user_id])).rows.map(s => s.name);
-
-      const { score, matchReason } = await calculateMatchScore(currentStudent, cand, weights);
+      const { score, matchReason } = scoreStudents(currentStudent, cand, skillsMap, wantsMap, availMap, weights);
       const rating = cand.review_count >= 3 ? parseFloat(cand.avg_rating).toFixed(1) : null;
+      const skills = (skillNamesMap[cand.user_id] || []).slice(0, 2);
 
       suggestions.push({
         userId: cand.user_id,

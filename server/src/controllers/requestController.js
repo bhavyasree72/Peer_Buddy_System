@@ -95,7 +95,7 @@ async function sendRequest(req, res) {
     const isYearGap = (senderProf.year === 1 && receiver.year >= 3) || (receiver.year === 1 && senderProf.year >= 3);
 
     // 3. Admin review_all_requests setting
-    const reviewSetting = (await query('SELECT value FROM settings WHERE key = "review_all_requests"')).rows[0];
+    const reviewSetting = (await query("SELECT value FROM settings WHERE key = 'review_all_requests'")).rows[0];
     const reviewAll = reviewSetting && reviewSetting.value === '1';
 
     const needsMentorReview = (wasReported || isYearGap || reviewAll) ? 1 : 0;

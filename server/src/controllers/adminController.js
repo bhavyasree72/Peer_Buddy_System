@@ -5,19 +5,19 @@ const { query } = require('../database/db');
 // GET /api/admin/dashboard
 async function getAdminDashboard(req, res) {
   try {
-    const totalUsers = (await query('SELECT COUNT(*) as c FROM users WHERE status != "deleted"')).rows[0].c;
+    const totalUsers = (await query("SELECT COUNT(*) as c FROM users WHERE status != 'deleted'")).rows[0].c;
     
     const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const activeThisWeek = (await query('SELECT COUNT(*) as c FROM users WHERE last_login >= ?', [oneWeekAgo])).rows[0].c;
+    const activeThisWeek = (await query('SELECT COUNT(*) as c FROM users WHERE last_login >= $1', [oneWeekAgo])).rows[0].c;
 
-    const openReports = (await query('SELECT COUNT(*) as c FROM reports WHERE status IN ("Submitted", "Under review")')).rows[0].c;
+    const openReports = (await query("SELECT COUNT(*) as c FROM reports WHERE status IN ('Submitted', 'Under review')")).rows[0].c;
 
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-    const sessionsThisMonth = (await query('SELECT COUNT(*) as c FROM study_sessions WHERE start_at >= ?', [startOfMonth])).rows[0].c;
+    const sessionsThisMonth = (await query('SELECT COUNT(*) as c FROM study_sessions WHERE start_at >= $1', [startOfMonth])).rows[0].c;
 
     // Requests statistics
     const totalRequests = (await query('SELECT COUNT(*) as c FROM buddy_requests')).rows[0].c;
-    const acceptedRequests = (await query('SELECT COUNT(*) as c FROM buddy_requests WHERE status = "accepted"')).rows[0].c;
+    const acceptedRequests = (await query("SELECT COUNT(*) as c FROM buddy_requests WHERE status = 'accepted'")).rows[0].c;
 
     // Real charts data: Registrations & Sessions over last 7 days
     const now = new Date();
@@ -26,15 +26,18 @@ async function getAdminDashboard(req, res) {
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
       const dateStr = d.toISOString().split('T')[0];
-      const regCount = (await query(`SELECT COUNT(*) as c FROM users WHERE created_at LIKE ?`, [`${dateStr}%`])).rows[0].c || 0;
-      const sessCount = (await query(`SELECT COUNT(*) as c FROM study_sessions WHERE start_at LIKE ?`, [`${dateStr}%`])).rows[0].c || 0;
-      const reqCount = (await query(`SELECT COUNT(*) as c FROM buddy_requests WHERE created_at LIKE ?`, [`${dateStr}%`])).rows[0].c || 0;
+      const startOfDay = new Date(`${dateStr}T00:00:00.000Z`).toISOString();
+      const endOfDay = new Date(new Date(`${dateStr}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000).toISOString();
+
+      const regCount = (await query(`SELECT COUNT(*) as c FROM users WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz`, [startOfDay, endOfDay])).rows[0].c || 0;
+      const sessCount = (await query(`SELECT COUNT(*) as c FROM study_sessions WHERE start_at >= $1::timestamptz AND start_at < $2::timestamptz`, [startOfDay, endOfDay])).rows[0].c || 0;
+      const reqCount = (await query(`SELECT COUNT(*) as c FROM buddy_requests WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz`, [startOfDay, endOfDay])).rows[0].c || 0;
       trendData.push({
         day: days[d.getDay()],
         date: dateStr,
-        registrations: regCount,
-        sessions: sessCount,
-        requests: reqCount
+        registrations: parseInt(regCount, 10),
+        sessions: parseInt(sessCount, 10),
+        requests: parseInt(reqCount, 10)
       });
     }
 
@@ -126,7 +129,7 @@ async function deleteMasterItem(req, res) {
 // Announcements endpoints
 async function getAnnouncements(req, res) {
   try {
-    const banner = (await query('SELECT value FROM settings WHERE key = "announcement_banner"')).rows[0];
+    const banner = (await query("SELECT value FROM settings WHERE key = 'announcement_banner'")).rows[0];
     return res.json({ announcement: banner ? banner.value : '' });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to load announcements.' });
@@ -137,7 +140,7 @@ async function saveAnnouncement(req, res) {
   try {
     const adminId = req.user.userId;
     const { announcement } = req.body;
-    await query('UPDATE settings SET value = ? WHERE key = "announcement_banner"', [announcement || '']);
+    await query("UPDATE settings SET value = ? WHERE key = 'announcement_banner'", [announcement || '']);
     await query(`INSERT INTO audit_log (log_id, actor_id, action, details) VALUES (?, ?, 'ANNOUNCEMENT_UPDATED', ?)`, [uuidv4(), adminId, announcement ? `Updated banner: ${announcement}` : 'Cleared banner']);
     return res.json({ message: 'Announcement banner updated successfully.' });
   } catch (err) {
@@ -172,7 +175,7 @@ async function getUsers(req, res) {
       params.push(status);
     }
     if (q) {
-      sql += ' AND (LOWER(u.email) LIKE ? OR LOWER(u.sap_id) LIKE ? OR LOWER(COALESCE(sp.full_name, stp.full_name, "")) LIKE ?)';
+      sql += " AND (LOWER(u.email) LIKE ? OR LOWER(u.sap_id) LIKE ? OR LOWER(COALESCE(sp.full_name, stp.full_name, '')) LIKE ?)";
       params.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
     }
 
@@ -210,7 +213,7 @@ async function updateUserStatus(req, res) {
           WHERE user_id = ?
         `, [userId]);
 
-        await query('UPDATE users SET status = "deleted", sap_id = NULL WHERE user_id = ?', [userId]);
+        await query("UPDATE users SET status = 'deleted', sap_id = NULL WHERE user_id = ?", [userId]);
 
         await query(`
           INSERT INTO audit_log (log_id, actor_id, action, target, details)
@@ -258,19 +261,24 @@ async function bulkImportUsers(req, res) {
       return res.status(400).json({ error: 'A list of students is required for bulk import.' });
     }
 
+    const crypto = require('crypto');
     let imported = 0;
-    const defaultPasswordHash = await bcrypt.hash('Student@123', 10);
+    const generatedCredentials = [];
 
     for (const s of students) {
       if (!s.email || !s.sapId) continue;
       const email = s.email.trim().toLowerCase();
       const existing = await query('SELECT user_id FROM users WHERE email = ? OR sap_id = ?', [email, s.sapId]);
       if (existing.rowCount === 0) {
+        // Generate random secure temporary password
+        const tempPassword = `PB@${crypto.randomBytes(4).toString('hex')}!${Math.floor(10 + Math.random() * 90)}`;
+        const passwordHash = await bcrypt.hash(tempPassword, 10);
         const userId = uuidv4();
+
         await query(`
           INSERT INTO users (user_id, sap_id, email, password_hash, role, status, email_verified)
           VALUES (?, ?, ?, ?, 'student', 'active', 1)
-        `, [userId, s.sapId, email, defaultPasswordHash]);
+        `, [userId, s.sapId, email, passwordHash]);
 
         await query(`
           INSERT INTO student_profiles (user_id, full_name, semester, profile_completeness)
@@ -278,6 +286,11 @@ async function bulkImportUsers(req, res) {
         `, [userId, s.fullName || 'Student', s.semester || 1]);
 
         imported++;
+        generatedCredentials.push({
+          email,
+          sapId: s.sapId,
+          temporaryPassword: tempPassword
+        });
       }
     }
 
@@ -286,7 +299,11 @@ async function bulkImportUsers(req, res) {
       VALUES (?, ?, 'BULK_USER_IMPORT', ?)
     `, [uuidv4(), adminId, `Bulk imported ${imported} students`]);
 
-    return res.json({ message: `Successfully imported ${imported} students.`, count: imported });
+    return res.json({
+      message: `Successfully imported ${imported} students.`,
+      count: imported,
+      credentials: generatedCredentials
+    });
   } catch (err) {
     console.error('bulkImportUsers error:', err);
     return res.status(500).json({ error: 'Bulk import failed.' });
@@ -333,9 +350,9 @@ async function handleReportAction(req, res) {
     const report = reportRes.rows[0];
 
     if (action === 'suspend') {
-      await query('UPDATE users SET status = "suspended" WHERE user_id = ?', [report.reported_user_id]);
+      await query("UPDATE users SET status = 'suspended' WHERE user_id = ?", [report.reported_user_id]);
     } else if (action === 'ban') {
-      await query('UPDATE users SET status = "suspended" WHERE user_id = ?', [report.reported_user_id]);
+      await query("UPDATE users SET status = 'suspended' WHERE user_id = ?", [report.reported_user_id]);
     }
 
     const finalStatus = action === 'dismiss' ? 'Closed' : 'Action taken';
@@ -546,13 +563,13 @@ async function allocateStudentMentor(req, res) {
     }
 
     // Verify student exists and is active student
-    const studentRes = await query('SELECT user_id FROM users WHERE user_id = ? AND role = "student" AND status = "active"', [studentId]);
+    const studentRes = await query("SELECT user_id FROM users WHERE user_id = ? AND role = 'student' AND status = 'active'", [studentId]);
     if (studentRes.rowCount === 0) {
       return res.status(404).json({ error: 'Active student not found.' });
     }
 
     // Verify mentor exists and is active mentor
-    const mentorRes = await query('SELECT user_id FROM users WHERE user_id = ? AND role = "mentor" AND status = "active"', [mentorId]);
+    const mentorRes = await query("SELECT user_id FROM users WHERE user_id = ? AND role = 'mentor' AND status = 'active'", [mentorId]);
     if (mentorRes.rowCount === 0) {
       return res.status(404).json({ error: 'Active mentor not found.' });
     }

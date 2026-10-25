@@ -1,12 +1,12 @@
 const { v4: uuidv4 } = require('uuid');
-const { query } = require('../database/db');
+const { query, withTransaction } = require('../database/db');
 
 // Calculate profile completeness score (0 to 100)
 function calculateCompleteness(profile, skillsCount, interestsCount, availabilityCount) {
   let score = 20; // base for registration
-  if (profile.full_name) score += 10;
-  if (profile.bio && profile.bio.trim().length > 10) score += 15;
-  if (profile.school_id && profile.program_id) score += 15;
+  if (profile && profile.full_name) score += 10;
+  if (profile && profile.bio && profile.bio.trim().length > 10) score += 15;
+  if (profile && profile.school_id && profile.program_id) score += 15;
   if (skillsCount > 0) score += 20;
   if (interestsCount > 0) score += 10;
   if (availabilityCount > 0) score += 10;
@@ -36,9 +36,9 @@ async function getProfile(req, res) {
       `, [targetUserId]);
       const profile = profRes.rows[0] || {};
 
-      // Skills
+      // Skills (include approved flag so custom suggested skills show pending)
       const skillsRes = await query(`
-        SELECT us.id, us.skill_id, us.type, us.level, sk.name, sk.category
+        SELECT us.id, us.skill_id, us.type, us.level, sk.name, sk.category, sk.approved
         FROM user_skills us
         JOIN skills sk ON us.skill_id = sk.skill_id
         WHERE us.user_id = ?
@@ -61,7 +61,7 @@ async function getProfile(req, res) {
         availability = availRes.rows;
       }
 
-      // Reviews summary (avg rating shown if >= 3 reviews as per doc)
+      // Reviews summary
       const reviewsRes = await query(`
         SELECT 
           COUNT(*) as review_count,
@@ -88,7 +88,6 @@ async function getProfile(req, res) {
         LIMIT 5
       `, [targetUserId]);
 
-      // Respect show_email
       const displayEmail = (isOwner || profile.show_email) ? user.email : null;
 
       return res.json({
@@ -147,134 +146,222 @@ async function updateProfile(req, res) {
       showEmail,
       showAvailability,
       photoUrl,
+      department,
+      designation,
+      expertise,
       skills, // array of { skillId, type: 'has' | 'wants_to_learn', level }
       interests, // array of interestId strings
       availability // array of { dayOfWeek, startTime, endTime }
     } = req.body;
 
     if (req.user.role === 'student') {
-      // Validate bio length
       if (bio && bio.length > 250) {
         return res.status(400).json({ error: 'Bio must be at most 250 characters.' });
       }
 
-      await query(`
-        UPDATE student_profiles
-        SET full_name = COALESCE(?, full_name),
-            bio = COALESCE(?, bio),
-            school_id = COALESCE(?, school_id),
-            program_id = COALESCE(?, program_id),
-            semester = COALESCE(?, semester),
-            year = COALESCE(?, year),
-            study_mode = COALESCE(?, study_mode),
-            open_to_requests = COALESCE(?, open_to_requests),
-            show_email = COALESCE(?, show_email),
-            show_availability = COALESCE(?, show_availability),
-            photo_url = COALESCE(?, photo_url)
-        WHERE user_id = ?
-      `, [
-        fullName,
-        bio,
-        schoolId,
-        programId,
-        semester,
-        year,
-        studyMode,
-        openToRequests !== undefined ? (openToRequests ? 1 : 0) : null,
-        showEmail !== undefined ? (showEmail ? 1 : 0) : null,
-        showAvailability !== undefined ? (showAvailability ? 1 : 0) : null,
-        photoUrl,
-        userId
-      ]);
+      // Convert empty strings to null for foreign keys and nullable fields
+      const cleanSchoolId = (schoolId && String(schoolId).trim()) ? String(schoolId).trim() : null;
+      const cleanProgramId = (programId && String(programId).trim()) ? String(programId).trim() : null;
+      const cleanFullName = (fullName !== undefined && String(fullName).trim()) ? String(fullName).trim() : null;
+      const cleanBio = (bio !== undefined && String(bio).trim()) ? String(bio).trim() : null;
+      const cleanStudyMode = studyMode || null;
+      const cleanPhotoUrl = (photoUrl && String(photoUrl).trim()) ? String(photoUrl).trim() : null;
+      const cleanSemester = (semester !== undefined && semester !== null && semester !== '') ? parseInt(semester, 10) : null;
+      const cleanYear = (year !== undefined && year !== null && year !== '') ? parseInt(year, 10) : null;
+      const cleanOpenToReq = openToRequests !== undefined ? (openToRequests ? 1 : 0) : null;
+      const cleanShowEmail = showEmail !== undefined ? (showEmail ? 1 : 0) : null;
+      const cleanShowAvail = showAvailability !== undefined ? (showAvailability ? 1 : 0) : null;
 
-      // Update skills if provided
-      if (Array.isArray(skills)) {
-        await query('DELETE FROM user_skills WHERE user_id = ?', [userId]);
-        for (const s of skills) {
-          if (s.skillId) {
-            await query(
-              'INSERT INTO user_skills (id, user_id, skill_id, type, level) VALUES (?, ?, ?, ?, ?)',
-              [uuidv4(), userId, s.skillId, s.type || 'has', s.level || 'intermediate']
-            );
+      const result = await withTransaction(async (txQuery) => {
+        // Ensure student profile row exists
+        const existingProf = await txQuery('SELECT user_id FROM student_profiles WHERE user_id = $1', [userId]);
+        if (existingProf.rowCount === 0) {
+          await txQuery(`
+            INSERT INTO student_profiles (user_id, full_name, school_id, program_id, semester, year, bio, study_mode, open_to_requests, show_email, show_availability, photo_url, profile_completeness)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 50)
+          `, [
+            userId,
+            cleanFullName || 'Student',
+            cleanSchoolId,
+            cleanProgramId,
+            cleanSemester || 1,
+            cleanYear || 1,
+            cleanBio,
+            cleanStudyMode || 'both',
+            cleanOpenToReq !== null ? cleanOpenToReq : 1,
+            cleanShowEmail !== null ? cleanShowEmail : 0,
+            cleanShowAvail !== null ? cleanShowAvail : 1,
+            cleanPhotoUrl
+          ]);
+        } else {
+          await txQuery(`
+            UPDATE student_profiles
+            SET full_name = COALESCE($1::varchar, full_name),
+                bio = COALESCE($2::text, bio),
+                school_id = COALESCE($3::varchar, school_id),
+                program_id = COALESCE($4::varchar, program_id),
+                semester = COALESCE($5::int, semester),
+                year = COALESCE($6::int, year),
+                study_mode = COALESCE($7::varchar, study_mode),
+                open_to_requests = COALESCE($8::int, open_to_requests),
+                show_email = COALESCE($9::int, show_email),
+                show_availability = COALESCE($10::int, show_availability),
+                photo_url = COALESCE($11::varchar, photo_url)
+            WHERE user_id = $12
+          `, [
+            cleanFullName,
+            cleanBio,
+            cleanSchoolId,
+            cleanProgramId,
+            cleanSemester,
+            cleanYear,
+            cleanStudyMode,
+            cleanOpenToReq,
+            cleanShowEmail,
+            cleanShowAvail,
+            cleanPhotoUrl,
+            userId
+          ]);
+        }
+
+        // Update skills atomically inside transaction
+        if (Array.isArray(skills)) {
+          await txQuery('DELETE FROM user_skills WHERE user_id = $1', [userId]);
+          for (const s of skills) {
+            const sId = s.skillId || s.skill_id;
+            if (sId) {
+              await txQuery(
+                'INSERT INTO user_skills (id, user_id, skill_id, type, level) VALUES ($1, $2, $3, $4, $5)',
+                [uuidv4(), userId, sId, s.type || 'has', s.level || 'intermediate']
+              );
+            }
           }
         }
-      }
 
-      // Update interests if provided
-      if (Array.isArray(interests)) {
-        await query('DELETE FROM user_interests WHERE user_id = ?', [userId]);
-        for (const intId of interests) {
-          if (intId) {
-            await query(
-              'INSERT INTO user_interests (id, user_id, interest_id) VALUES (?, ?, ?)',
-              [uuidv4(), userId, intId]
-            );
+        // Update interests atomically inside transaction
+        if (Array.isArray(interests)) {
+          await txQuery('DELETE FROM user_interests WHERE user_id = $1', [userId]);
+          for (const intId of interests) {
+            const actualId = typeof intId === 'object' ? (intId.interest_id || intId.interestId) : intId;
+            if (actualId) {
+              await txQuery(
+                'INSERT INTO user_interests (id, user_id, interest_id) VALUES ($1, $2, $3)',
+                [uuidv4(), userId, actualId]
+              );
+            }
           }
         }
-      }
 
-      // Update availability if provided
-      if (Array.isArray(availability)) {
-        await query('DELETE FROM availability WHERE user_id = ?', [userId]);
-        for (const slot of availability) {
-          if (slot.dayOfWeek && slot.startTime && slot.endTime) {
-            await query(
-              'INSERT INTO availability (availability_id, user_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)',
-              [uuidv4(), userId, slot.dayOfWeek, slot.startTime, slot.endTime]
-            );
+        // Update availability atomically inside transaction
+        if (Array.isArray(availability)) {
+          await txQuery('DELETE FROM availability WHERE user_id = $1', [userId]);
+          for (const slot of availability) {
+            const day = slot.dayOfWeek || slot.day_of_week;
+            const start = slot.startTime || slot.start_time;
+            const end = slot.endTime || slot.end_time;
+            if (day && start && end) {
+              await txQuery(
+                'INSERT INTO availability (availability_id, user_id, day_of_week, start_time, end_time) VALUES ($1, $2, $3, $4, $5)',
+                [uuidv4(), userId, day, start, end]
+              );
+            }
           }
         }
-      }
 
-      // Re-calculate completeness
-      const profRes = await query('SELECT * FROM student_profiles WHERE user_id = ?', [userId]);
-      const skCount = (await query('SELECT COUNT(*) as c FROM user_skills WHERE user_id = ?', [userId])).rows[0].c;
-      const itCount = (await query('SELECT COUNT(*) as c FROM user_interests WHERE user_id = ?', [userId])).rows[0].c;
-      const avCount = (await query('SELECT COUNT(*) as c FROM availability WHERE user_id = ?', [userId])).rows[0].c;
+        // Re-calculate completeness
+        const profRes = await txQuery('SELECT * FROM student_profiles WHERE user_id = $1', [userId]);
+        const skCount = (await txQuery('SELECT COUNT(*) as c FROM user_skills WHERE user_id = $1', [userId])).rows[0].c;
+        const itCount = (await txQuery('SELECT COUNT(*) as c FROM user_interests WHERE user_id = $1', [userId])).rows[0].c;
+        const avCount = (await txQuery('SELECT COUNT(*) as c FROM availability WHERE user_id = $1', [userId])).rows[0].c;
 
-      const completeness = calculateCompleteness(profRes.rows[0], skCount, itCount, avCount);
-      await query('UPDATE student_profiles SET profile_completeness = ? WHERE user_id = ?', [completeness, userId]);
+        const completeness = calculateCompleteness(profRes.rows[0], parseInt(skCount, 10), parseInt(itCount, 10), parseInt(avCount, 10));
+        await txQuery('UPDATE student_profiles SET profile_completeness = $1 WHERE user_id = $2', [completeness, userId]);
 
-      return res.json({ message: 'Profile updated', profileCompleteness: completeness });
+        return { completeness };
+      });
+
+      return res.json({ message: 'Profile updated', profileCompleteness: result.completeness });
     } else {
-      // Staff profile update
-      const { department, designation, expertise } = req.body;
-      await query(`
-        UPDATE staff_profiles
-        SET full_name = COALESCE(?, full_name),
-            department = COALESCE(?, department),
-            designation = COALESCE(?, designation),
-            expertise = COALESCE(?, expertise)
-        WHERE user_id = ?
-      `, [fullName, department, designation, expertise, userId]);
+      // Mentor, Faculty, Admin Profile Update
+      const cleanFullName = (fullName !== undefined && String(fullName).trim()) ? String(fullName).trim() : null;
+      const cleanDept = (department !== undefined && String(department).trim()) ? String(department).trim() : null;
+      const cleanDesig = (designation !== undefined && String(designation).trim()) ? String(designation).trim() : null;
+      const cleanExp = (expertise !== undefined && String(expertise).trim()) ? String(expertise).trim() : null;
+
+      await withTransaction(async (txQuery) => {
+        const staffRes = await txQuery('SELECT user_id FROM staff_profiles WHERE user_id = $1', [userId]);
+        if (staffRes.rowCount === 0) {
+          await txQuery(`
+            INSERT INTO staff_profiles (user_id, full_name, department, designation, expertise)
+            VALUES ($1, $2, $3, $4, $5)
+          `, [
+            userId,
+            cleanFullName || 'Staff Member',
+            cleanDept || 'Academic Department',
+            cleanDesig || (req.user.role === 'mentor' ? 'Academic Mentor' : req.user.role === 'faculty' ? 'Faculty Member' : 'Administrator'),
+            cleanExp || ''
+          ]);
+        } else {
+          await txQuery(`
+            UPDATE staff_profiles
+            SET full_name = COALESCE($1::varchar, full_name),
+                department = COALESCE($2::varchar, department),
+                designation = COALESCE($3::varchar, designation),
+                expertise = COALESCE($4::text, expertise)
+            WHERE user_id = $5
+          `, [cleanFullName, cleanDept, cleanDesig, cleanExp, userId]);
+        }
+      });
 
       return res.json({ message: 'Profile updated' });
     }
   } catch (err) {
     console.error('updateProfile error:', err);
-    return res.status(500).json({ error: 'Failed to update profile.' });
+    return res.status(500).json({ error: err.message || 'Failed to update profile.' });
   }
 }
 
 // POST /api/profile/suggest-skill
 async function suggestSkill(req, res) {
   try {
-    const { name, category } = req.body;
+    const { name, category, type = 'has' } = req.body;
     if (!name || !category) {
       return res.status(400).json({ error: 'Skill name and category are required.' });
     }
 
-    const skillId = `sk-${uuidv4().slice(0, 8)}`;
-    await query('INSERT INTO skills (skill_id, name, category, approved, suggested_by) VALUES (?, ?, ?, 0, ?)', [
-      skillId,
-      name.trim(),
-      category.trim(),
-      req.user.userId
-    ]);
+    const trimmedName = name.trim();
+    const trimmedCat = category.trim();
+
+    // Check if skill already exists in skills table
+    let skillId;
+    const existing = await query('SELECT skill_id, approved FROM skills WHERE LOWER(name) = LOWER(?)', [trimmedName]);
+    if (existing.rowCount > 0) {
+      skillId = existing.rows[0].skill_id;
+    } else {
+      skillId = `sk-${uuidv4().slice(0, 8)}`;
+      await query('INSERT INTO skills (skill_id, name, category, approved, suggested_by) VALUES (?, ?, ?, 0, ?)', [
+        skillId,
+        trimmedName,
+        trimmedCat,
+        req.user.userId
+      ]);
+    }
+
+    // Immediately associate with student in user_skills as well so it stays on profile
+    const existingUserSkill = await query('SELECT id FROM user_skills WHERE user_id = ? AND skill_id = ?', [req.user.userId, skillId]);
+    if (existingUserSkill.rowCount === 0) {
+      await query(
+        'INSERT INTO user_skills (id, user_id, skill_id, type, level) VALUES (?, ?, ?, ?, ?)',
+        [uuidv4(), req.user.userId, skillId, type, 'beginner']
+      );
+    }
 
     return res.status(201).json({
-      message: 'Skill submitted for admin approval.',
-      skillId
+      message: 'Skill saved to your profile and submitted for admin approval.',
+      skillId,
+      name: trimmedName,
+      category: trimmedCat,
+      approved: 0
     });
   } catch (err) {
     console.error('suggestSkill error:', err);

@@ -117,7 +117,31 @@ async function sendMessage(req, res) {
     let attachmentType = null;
 
     if (req.file) {
-      attachmentUrl = `/uploads/${req.file.filename}`;
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const storageKey = `chat/${uuidv4()}${ext}`;
+      const { supabase } = require('../utils/supabase');
+
+      if (supabase && supabase.storage) {
+        const { error: uploadError } = await supabase.storage
+          .from('peer-buddy-resources')
+          .upload(storageKey, req.file.buffer, {
+            contentType: req.file.mimetype,
+            upsert: true
+          });
+
+        if (uploadError) {
+          console.error('Supabase chat upload error:', uploadError);
+          return res.status(500).json({ error: 'Failed to upload chat attachment to cloud storage.' });
+        }
+
+        const { data: publicData } = supabase.storage
+          .from('peer-buddy-resources')
+          .getPublicUrl(storageKey);
+
+        attachmentUrl = publicData.publicUrl;
+      } else {
+        attachmentUrl = `/uploads/${messageId}${ext}`;
+      }
       attachmentName = req.file.originalname;
       attachmentType = req.file.mimetype;
     }
@@ -166,9 +190,12 @@ async function downloadAttachment(req, res) {
       return res.status(403).json({ error: 'Access denied: You are not authorized to view this attachment.' });
     }
 
-    // Safe path resolution preventing directory traversal
-    const path = require('path');
-    const fs = require('fs');
+    // If URL is cloud hosted (Supabase Storage or external), redirect
+    if (msg.attachment_url.startsWith('http://') || msg.attachment_url.startsWith('https://')) {
+      return res.redirect(msg.attachment_url);
+    }
+
+    // Fallback: Safe path resolution for local files
     const filename = path.basename(msg.attachment_url);
     const filePath = path.resolve(__dirname, '../../../uploads', filename);
 
@@ -199,7 +226,7 @@ async function startDirectConversation(req, res) {
     }
 
     // Verify target user exists and is active
-    const targetRes = await query('SELECT user_id, role, status FROM users WHERE user_id = ? AND status = "active"', [targetUserId]);
+    const targetRes = await query("SELECT user_id, role, status FROM users WHERE user_id = ? AND status = 'active'", [targetUserId]);
     if (targetRes.rowCount === 0) {
       return res.status(404).json({ error: 'Target user not found or inactive.' });
     }

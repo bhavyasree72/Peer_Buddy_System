@@ -27,6 +27,7 @@ export default function Sidebar({ user, activePage, setActivePage, unreadCount, 
     { id: 'chat', label: 'Chat', icon: MessageSquare },
     { id: 'sessions', label: 'Sessions', icon: Calendar },
     { id: 'resources', label: 'Resources', icon: BookOpen },
+    { id: 'notifications', label: 'Notifications', icon: Bell, badge: unreadCount },
     { id: 'history', label: 'History', icon: Clock },
     { id: 'profile', label: 'Profile', icon: User }
   ];
@@ -72,7 +73,7 @@ export default function Sidebar({ user, activePage, setActivePage, unreadCount, 
   return (
     <aside className="sidebar">
       {/* College Identity Header */}
-      <div style={{ padding: '24px 20px 16px 20px', borderBottom: '1px solid var(--border)' }}>
+      <div className="sidebar-header" style={{ padding: '24px 20px 16px 20px', borderBottom: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <div style={{
             width: '32px',
@@ -98,7 +99,7 @@ export default function Sidebar({ user, activePage, setActivePage, unreadCount, 
       </div>
 
       {/* Role tag */}
-      <div style={{ padding: '12px 20px 8px 20px' }}>
+      <div className="sidebar-role" style={{ padding: '12px 20px 8px 20px' }}>
         <span className="badge" style={{ textTransform: 'capitalize', width: 'fit-content' }}>
           {user.role} Portal
         </span>
@@ -147,7 +148,7 @@ export default function Sidebar({ user, activePage, setActivePage, unreadCount, 
       </nav>
 
       {/* User info & Logout */}
-      <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
+      <div className="sidebar-footer" style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
         <div style={{ marginBottom: '12px' }}>
           <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {user.fullName || user.email}

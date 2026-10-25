@@ -255,7 +255,31 @@ async function uploadResource(req, res) {
 
     let fileUrlOrLink = link;
     if (req.file) {
-      fileUrlOrLink = `/uploads/${req.file.filename}`;
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const storageKey = `resources/${uuidv4()}${ext}`;
+      const { supabase } = require('../utils/supabase');
+
+      if (supabase && supabase.storage) {
+        const { error: uploadError } = await supabase.storage
+          .from('peer-buddy-resources')
+          .upload(storageKey, req.file.buffer, {
+            contentType: req.file.mimetype,
+            upsert: true
+          });
+
+        if (uploadError) {
+          console.error('Supabase resource upload error:', uploadError);
+          return res.status(500).json({ error: 'Failed to upload resource to cloud storage.' });
+        }
+
+        const { data: publicData } = supabase.storage
+          .from('peer-buddy-resources')
+          .getPublicUrl(storageKey);
+
+        fileUrlOrLink = publicData.publicUrl;
+      } else {
+        fileUrlOrLink = `/uploads/${uuidv4()}${ext}`;
+      }
     }
 
     if (!fileUrlOrLink) {
@@ -270,7 +294,8 @@ async function uploadResource(req, res) {
 
     return res.status(201).json({
       message: 'Resource uploaded successfully.',
-      resourceId
+      resourceId,
+      fileUrl: fileUrlOrLink
     });
   } catch (err) {
     console.error('uploadResource error:', err);

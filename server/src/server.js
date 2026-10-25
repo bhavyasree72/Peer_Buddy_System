@@ -28,15 +28,49 @@ const seed = require('./database/seed');
 const app = express();
 const server = http.createServer(app);
 
+// Allowed origins
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  process.env.FRONTEND_URL,
+  'http://localhost:3000',
+  'http://localhost:5000'
+].filter(Boolean);
+
+function isOriginAllowed(origin) {
+  if (!origin) return true; // allow same-origin, curl, server-to-server
+  if (allowedOrigins.includes(origin)) return true;
+  // Allow Firebase Hosting and Cloud Run domain patterns
+  if (/\.web\.app$/.test(origin) || /\.firebaseapp\.com$/.test(origin) || /\.run\.app$/.test(origin)) {
+    return true;
+  }
+  return false;
+}
+
 const io = new Server(server, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE']
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, true); // Permissive in dev/fallback or match
+      }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
   }
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: (origin, callback) => {
+    if (isOriginAllowed(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true);
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -91,13 +125,18 @@ const PORT = process.env.PORT || 5000;
 
 async function bootstrap() {
   try {
-    await migrate();
-    await seed();
-    server.listen(PORT, () => {
+    server.listen(PORT, async () => {
       console.log(`=======================================================`);
       console.log(` NMIMS Peer Buddy System API Server running on port ${PORT}`);
       console.log(` WebSocket Chat Server ready`);
       console.log(`=======================================================`);
+
+      try {
+        await seed.seedMasterData();
+        await seed.ensureBootstrapAdmin();
+      } catch (initErr) {
+        console.error('Initialization error during bootstrap:', initErr);
+      }
     });
   } catch (err) {
     console.error('Failed to start server:', err);

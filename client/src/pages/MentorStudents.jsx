@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import { Search, Filter, Eye, Users } from 'lucide-react';
 
-export default function MentorStudents({ user, onSelectProfile }) {
+export default function MentorStudents({ user, onSelectProfile, onNavigateChat }) {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState({

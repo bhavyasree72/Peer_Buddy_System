@@ -1,0 +1,14 @@
+node_modules
+.git
+.gitignore
+*.log
+peer_buddy.db
+ppt_export
+uploads
+server/.env
+server/.env.*
+client/node_modules
+client/src
+server/test
+server/scripts
+.agents

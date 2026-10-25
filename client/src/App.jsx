@@ -49,7 +49,7 @@ export default function App() {
   const [reportModalData, setReportModalData] = useState(null);
 
   useEffect(() => {
-    if (currentUser && currentUser.role !== 'student') {
+    if (currentUser) {
       loadUnreadCount();
       const interval = setInterval(loadUnreadCount, 30000);
       return () => clearInterval(interval);
@@ -57,7 +57,7 @@ export default function App() {
   }, [currentUser]);
 
   async function loadUnreadCount() {
-    if (!currentUser || currentUser.role === 'student') return;
+    if (!currentUser) return;
     try {
       const res = await api.getNotifications();
       setUnreadCount(res.unreadCount || 0);
@@ -156,6 +156,10 @@ export default function App() {
 
             {activePage === 'resources' && (
               <ResourcesPage user={currentUser} />
+            )}
+
+            {activePage === 'notifications' && (
+              <NotificationsPage user={currentUser} />
             )}
 
             {activePage === 'history' && (

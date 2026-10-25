@@ -6,6 +6,19 @@ async function migrate() {
   console.log('Running database migrations...');
 
   if (isPostgresConfigured()) {
+    try {
+      const checkUsers = await query(`
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_name = 'users'
+      `);
+      if (checkUsers.rowCount > 0) {
+        console.log('PostgreSQL schema already exists. Skipping full schema execution.');
+        return;
+      }
+    } catch (checkErr) {
+      console.warn('Could not verify existing users table, proceeding with migration check:', checkErr.message);
+    }
+
     console.log('Applying authoritative PostgreSQL / Supabase schema...');
     const schemaSqlPath = path.join(__dirname, 'sql/schema.sql');
     if (fs.existsSync(schemaSqlPath)) {

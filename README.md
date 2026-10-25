@@ -16,46 +16,19 @@ An intra-college peer mentorship and study partner collaboration platform design
 
 - **Supabase PostgreSQL & Dual Mode**: Primary PostgreSQL connection via Supabase Transaction Pooler (`aws-0-ap-south-1.pooler.supabase.com:6543`) with Row Level Security (RLS) policies across all tables, falling back automatically to local SQLite (`sql.js`) when offline.
 - **Strict Role-Based Registration & Validation**:
-  - **Student Email**: Must end with `@nmims.in`.
-  - **Faculty & Mentor Email**: Must end with `@nmims.edu`.
-  - **SAP ID**: Exactly 11 numeric digits starting with `7` (`^7\d{10}$`), validated on client, server, and enforced via DB check constraints.
+  - **All Roles (Student, Faculty, Mentor, Admin)**: Strictly require a valid `@gmail.com` address. All other domains (including `@nmims.in` and `@nmims.edu`) are explicitly rejected.
+  - **SAP ID**: Exactly 11 numeric digits starting with `7` (`^7\d{10}$`), validated on client, server, and enforced via DB check constraints for students.
   - **Name**: Letters and spaces only, minimum 2 characters.
   - **Strong Password Policy**: Minimum 8 characters with at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character with a live 5-point checklist indicator.
   - **Isolated Form State**: Role switching (Student / Faculty / Mentor) resets form values and prevents browser autofill or field bleeding.
-  - **No Pre-selected Dropdowns**: Mandatory disabled placeholders (`Select semester…`, `Select school…`, `Select program…`, `Select year…`, `Select mentor…`) prevent accidental default submissions.
-- **Role-Aware Authentication**:
-  - Login email placeholder adapts dynamically based on selected role (`student@nmims.in`, `faculty@nmims.edu`, `mentor@nmims.edu`).
-  - Forgot Password dispatches single-use cryptographically secure SHA-256 tokens valid for 30 minutes.
-  - Dedicated `/reset-password` recovery handler with password rule enforcement.
-- **Multi-Buddy Search & Connections**:
-  - Search lists all registered students (excluding self) with multi-criteria filtering by name, SAP ID, and semester.
-  - Many-to-many buddy connections (students can connect with multiple peers) with order-independent uniqueness enforced via `LEAST(user_a, user_b), GREATEST(user_a, user_b)`.
-- **Private One-to-One Chat (Student, Mentor & Faculty)**:
-  - Strict participant authentication on REST API (`/api/chat/messages/:connectionId`) and Socket.IO rooms preventing unauthorized message snooping.
-  - Direct 1-to-1 conversation creation (`POST /api/chat/start-direct`) between students and assigned mentors or faculty.
-  - Chat access directly available in Mentor and Faculty sidebars.
-- **Faculty Dashboard & Dependent Student Filtering**:
-  - Dependent Program and Semester dropdowns dynamically calculate semester ranges per school program.
-  - Student Profile View Modal displaying comprehensive academic info, bio, skills, and interests.
-- **Mentor Student Allocation & Resource Management**:
-  - Mentor overview and student directory restricted strictly to allocated mentees (`student_profiles.mentor_id` or active mentor connections).
-  - Dedicated administrative endpoint (`POST /api/admin/allocate-student`) for authorized student-to-mentor assignment.
-- **Streamlined Navigation & Standardized Schools**:
-  - School selection across registration, profiles, and directories strictly standardized to 5 approved NMIMS schools (`SOL`, `STME`, `SPTM`, `SOC`, `SBM`).
-  - Simplified Student Activity History by removing redundant conversation tables while retaining Buddies, Sessions, and Feedback.
+  - **No Pre-selected Dropdowns**: Mandatory disabled placeholders prevent accidental default submissions.
 
 ---
 
-## 🔑 Login Credentials (4 Pre-Seeded Accounts)
+## 🔑 Authentication & Admin Access
 
-All 4 test accounts are pre-seeded, active, and verified:
-
-| Role | Email Address | Password | Details |
-| :--- | :--- | :--- | :--- |
-| **Student** | `student@nmims.in` | `Student@123` | SAP ID: `70000000001` (Aditi Sharma, B.Tech CSDS) |
-| **Mentor** | `mentor@nmims.in` | `Mentor@123` | Dr. Rajesh Deshmukh (Senior Technical Mentor) |
-| **Faculty** | `faculty@nmims.in` | `Faculty@123` | Prof. Ananya Iyer (Computer Science & Engineering) |
-| **Administrator** | `admin@nmims.in` | `Admin@123` | NMIMS System Administrator (Academic IT) |
+- **Standard Users**: Register directly via the application with your `@gmail.com` email address.
+- **Initial Administrator**: An initial bootstrap administrator account is automatically provisioned on server startup via the environment variables `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`, and `BOOTSTRAP_ADMIN_NAME`.
 
 ---
 
