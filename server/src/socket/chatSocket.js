@@ -67,8 +67,8 @@ function setupSocket(io) {
       socket.to(connectionId).emit('typing_stop', { connectionId, userId });
     });
 
-    // Real-time message sending
-    socket.on('send_message', async ({ connectionId, body, attachmentUrl, attachmentName, attachmentType }) => {
+    // Real-time message broadcasting (row is already saved via POST /api/chat/send)
+    socket.on('send_message', async ({ connectionId, body, attachmentUrl, attachmentName, attachmentType, messageId: clientMsgId, sentAt }) => {
       try {
         // Enforce membership check
         const connCheck = await query(`
@@ -80,12 +80,6 @@ function setupSocket(io) {
           return socket.emit('error', { message: 'Unauthorized: cannot send message to this conversation.' });
         }
 
-        const messageId = uuidv4();
-        await query(`
-          INSERT INTO messages (message_id, connection_id, sender_id, body, attachment_url, attachment_name, attachment_type, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'sent')
-        `, [messageId, connectionId, userId, body || '', attachmentUrl || null, attachmentName || null, attachmentType || null]);
-
         const senderRes = await query(`
           SELECT COALESCE(sp.full_name, stp.full_name, u.email, 'NMIMS User') as full_name
           FROM users u
@@ -96,7 +90,7 @@ function setupSocket(io) {
         const senderName = senderRes.rows[0] ? senderRes.rows[0].full_name : 'NMIMS User';
 
         const newMsg = {
-          message_id: messageId,
+          message_id: clientMsgId || uuidv4(),
           connection_id: connectionId,
           sender_id: userId,
           sender_name: senderName,
@@ -105,11 +99,11 @@ function setupSocket(io) {
           attachment_name: attachmentName,
           attachment_type: attachmentType,
           status: 'sent',
-          sent_at: new Date().toISOString()
+          sent_at: sentAt || new Date().toISOString()
         };
 
-        // Broadcast to room
-        io.to(connectionId).emit('new_message', newMsg);
+        // Broadcast to all sockets in the conversation room except sender
+        socket.to(connectionId).emit('new_message', newMsg);
       } catch (err) {
         console.error('Socket send_message error:', err);
       }

@@ -85,7 +85,7 @@ export default function StudentHome({ user, onNavigate }) {
         </p>
       </div>
 
-      {/* Row of 3 Tiles from doc 7.3: Pending requests, Next session, Unread messages */}
+      {/* Row of 2 Tiles: Pending requests, Next session */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
@@ -133,27 +133,6 @@ export default function StudentHome({ user, onNavigate }) {
             <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
               {data.nextSession ? new Date(data.nextSession.start_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'Next study session'}
             </div>
-          </div>
-        </div>
-
-        {/* Tile 3: Unread messages */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '16px', cursor: 'pointer' }} onClick={() => onNavigate('chat')}>
-          <div style={{
-            width: '48px',
-            height: '48px',
-            borderRadius: '8px',
-            backgroundColor: 'var(--accent-tint)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}>
-            <MessageSquare size={24} color="var(--accent)" />
-          </div>
-          <div>
-            <div style={{ fontSize: '24px', fontWeight: '700', color: 'var(--text-main)', lineHeight: '1.2' }}>
-              {data.unreadMessagesCount}
-            </div>
-            <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Unread alerts & messages</div>
           </div>
         </div>
       </div>

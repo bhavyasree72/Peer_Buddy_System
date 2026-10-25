@@ -206,7 +206,36 @@ export default function MyProfile({ user }) {
     }
   }
 
-  if (loading) return <div style={{ padding: '24px' }}>Loading profile details...</div>;
+  if (loading) {
+    return (
+      <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-muted)' }}>
+        Loading profile details...
+      </div>
+    );
+  }
+
+  if (saveError && !profile) {
+    return (
+      <div style={{ padding: '32px', textAlign: 'center' }}>
+        <p style={{ color: 'var(--accent)', marginBottom: '16px' }}>Could not load. Retry</p>
+        <button className="btn-primary" onClick={loadProfile}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const defaultSchools = [
+    { id: 'sch-stme', code: 'STME', name: 'School of Technology Management and Engineering (STME)', semesters: 8 },
+    { id: 'sch-sol', code: 'SOL', name: 'Kirit P. Mehta School of Law (SOL)', semesters: 10 },
+    { id: 'sch-sptm', code: 'SPTM', name: 'Shobhaben Pratapbhai Patel School of Pharmacy & Technology Management (SPTM)', semesters: 10 },
+    { id: 'sch-sbm', code: 'SBM', name: 'School of Business Management (SBM)', semesters: 4 },
+    { id: 'sch-soc', code: 'SOC', name: 'School of Commerce (SOC)', semesters: 6 }
+  ];
+
+  const availableSchools = (master.schools && master.schools.length > 0)
+    ? master.schools.filter(s => ['STME', 'SOL', 'SPTM', 'SBM', 'SOC'].includes((s.code || '').toUpperCase()))
+    : defaultSchools;
 
   // Combine master skills with any custom skills on this student's profile
   const allAvailableSkills = [...(master.skills || [])];
@@ -336,11 +365,9 @@ export default function MyProfile({ user }) {
               }}
             >
               <option value="">Select School</option>
-              {master.schools && master.schools
-                .filter(s => ['STME', 'SOL', 'SPTM', 'SBM', 'SOC'].includes((s.code || '').toUpperCase()))
-                .map(s => (
-                  <option key={s.id} value={s.id}>{s.code} – {s.name.replace(/\s*\([^)]*\)$/, '')}</option>
-                ))}
+              {availableSchools.map(s => (
+                <option key={s.id} value={s.id}>{s.code} – {s.name.replace(/\s*\([^)]*\)$/, '')}</option>
+              ))}
             </select>
           </div>
 

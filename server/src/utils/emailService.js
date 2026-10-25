@@ -55,6 +55,10 @@ function getSender() {
 
 function getFrontendUrl() {
   let url = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'https://peer-buddy-api.onrender.com';
+  // Strip any accidental Vercel or localhost references in production
+  if (url.includes('vercel.app')) {
+    url = 'https://peer-buddy-api.onrender.com';
+  }
   if (url.endsWith('/')) {
     url = url.slice(0, -1);
   }

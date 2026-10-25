@@ -28,10 +28,11 @@ export default function FindBuddies({ onSelectProfile }) {
   const [showNoteModal, setShowNoteModal] = useState(null); // buddy to send request to
   const [requestText, setRequestText] = useState('');
 
+  const [hasSearched, setHasSearched] = useState(false);
+
   useEffect(() => {
     loadMaster();
-    doSearch();
-  }, [filters.sortBy, filters.page, filters.schoolId, filters.programId, filters.semester, filters.skillId, filters.interestId, filters.dayOfWeek, filters.studyMode, filters.minRating]);
+  }, []);
 
   async function loadMaster() {
     try {
@@ -42,10 +43,12 @@ export default function FindBuddies({ onSelectProfile }) {
     }
   }
 
-  async function doSearch() {
+  async function doSearch(overrideFilters) {
+    const current = overrideFilters || filters;
     setLoading(true);
+    setHasSearched(true);
     try {
-      const res = await api.searchBuddies(filters);
+      const res = await api.searchBuddies(current);
       setBuddies(res.buddies || []);
       setPagination(res.pagination || { total: 0, totalPages: 1 });
     } catch (err) {
@@ -57,8 +60,9 @@ export default function FindBuddies({ onSelectProfile }) {
 
   function handleSearchSubmit(e) {
     e.preventDefault();
-    setFilters(prev => ({ ...prev, page: 1 }));
-    doSearch();
+    const updated = { ...filters, page: 1 };
+    setFilters(updated);
+    doSearch(updated);
   }
 
   async function submitBuddyRequest() {
@@ -239,15 +243,30 @@ export default function FindBuddies({ onSelectProfile }) {
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
               Searching compatible buddies...
             </div>
+          ) : !hasSearched ? (
+            <div className="empty-state" style={{ textAlign: 'center', padding: '40px' }}>
+              <h3>Find Study Partners</h3>
+              <p>Enter a student name, skill, or apply filters and click Search to discover compatible study buddies.</p>
+              <button
+                className="btn-primary"
+                onClick={() => doSearch()}
+              >
+                Search Buddies
+              </button>
+            </div>
           ) : buddies.length === 0 ? (
             <div className="empty-state">
               <h3>No buddies found</h3>
               <p>Try adjusting your search keywords or clearing active filters to see more students.</p>
               <button
                 className="btn-secondary"
-                onClick={() => setFilters({
-                  q: '', schoolId: '', programId: '', semester: '', skillId: '', interestId: '', dayOfWeek: '', studyMode: '', minRating: '', sortBy: 'best_match', page: 1, limit: 12
-                })}
+                onClick={() => {
+                  const reset = {
+                    q: '', schoolId: '', programId: '', semester: '', skillId: '', interestId: '', dayOfWeek: '', studyMode: '', minRating: '', sortBy: 'best_match', page: 1, limit: 12
+                  };
+                  setFilters(reset);
+                  doSearch(reset);
+                }}
               >
                 Clear all filters
               </button>

@@ -107,13 +107,15 @@ export default function ChatPage({ initialConnectionId, onNavigateSchedule, onSe
 
       const res = await api.sendMessage(formData);
 
-      if (socketRef.current) {
+      if (socketRef.current && res.chatMessage) {
         socketRef.current.emit('send_message', {
           connectionId: activeConnId,
-          body: text.trim(),
+          messageId: res.chatMessage.message_id,
+          body: res.chatMessage.body,
           attachmentUrl: res.chatMessage.attachment_url,
           attachmentName: res.chatMessage.attachment_name,
-          attachmentType: res.chatMessage.attachment_type
+          attachmentType: res.chatMessage.attachment_type,
+          sentAt: res.chatMessage.sent_at
         });
       }
 

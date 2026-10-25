@@ -158,10 +158,6 @@ export default function App() {
               <ResourcesPage user={currentUser} />
             )}
 
-            {activePage === 'notifications' && (
-              <NotificationsPage user={currentUser} />
-            )}
-
             {activePage === 'history' && (
               <ActivityHistory user={currentUser} />
             )}

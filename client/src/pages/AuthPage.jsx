@@ -8,10 +8,28 @@ export default function AuthPage({ onLoginSuccess }) {
   const [forgotMode, setForgotMode] = useState(false);
   const [master, setMaster] = useState({ schools: [], programs: [], mentors: [] });
 
-  // Login form state - with role selector for email placeholder awareness (Issue 10)
+  // Login form state - ISOLATED per role (Student, Faculty, Mentor)
   const [loginRole, setLoginRole] = useState('student');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [loginForms, setLoginForms] = useState({
+    student: { email: '', password: '' },
+    faculty: { email: '', password: '' },
+    mentor: { email: '', password: '' }
+  });
+
+  const currentLoginEmail = loginForms[loginRole]?.email || '';
+  const currentLoginPassword = loginForms[loginRole]?.password || '';
+
+  const updateLoginForm = (field, value) => {
+    setMessage('');
+    setError('');
+    setLoginForms(prev => ({
+      ...prev,
+      [loginRole]: {
+        ...prev[loginRole],
+        [field]: value
+      }
+    }));
+  };
 
   // Register form state - isolated state per role (Issue 7)
   const [selectedRole, setSelectedRole] = useState('student');
@@ -103,10 +121,13 @@ export default function AuthPage({ onLoginSuccess }) {
   function handleRoleSwitch(newRole) {
     setSelectedRole(newRole);
     setError('');
+    setMessage('');
     setStep(1);
   }
 
   function updateActiveForm(field, value) {
+    setMessage('');
+    setError('');
     if (selectedRole === 'student') {
       setStudentForm(prev => ({ ...prev, [field]: value }));
     } else if (selectedRole === 'faculty') {
@@ -123,7 +144,7 @@ export default function AuthPage({ onLoginSuccess }) {
     setLoading(true);
 
     try {
-      const res = await api.login({ email, password });
+      const res = await api.login({ email: currentLoginEmail, password: currentLoginPassword });
       localStorage.setItem('token', res.accessToken);
       localStorage.setItem('user', JSON.stringify(res.user));
       onLoginSuccess(res.user);
@@ -137,6 +158,7 @@ export default function AuthPage({ onLoginSuccess }) {
   async function handleRegister(e) {
     e.preventDefault();
     setError('');
+    setMessage('');
 
     // Step 1 validation
     if (step === 1) {
@@ -241,14 +263,21 @@ export default function AuthPage({ onLoginSuccess }) {
       };
 
       const res = await api.register(payload);
-      setMessage(res.message);
+      const successMsg = res.emailSent
+        ? 'Account created successfully! You can sign in now.'
+        : 'Account created. You can sign in now. The confirmation email could not be sent.';
+      setMessage(successMsg);
       setIsRegister(false);
       setStep(1);
       setStudentForm(initialStudentData);
       setFacultyForm(initialStaffData);
       setMentorForm(initialStaffData);
-      setEmail('');
-      setPassword('');
+      // Pre-fill registered email in the corresponding role's login box
+      setLoginRole(selectedRole);
+      setLoginForms(prev => ({
+        ...prev,
+        [selectedRole]: { email: payload.email, password: '' }
+      }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -403,7 +432,7 @@ export default function AuthPage({ onLoginSuccess }) {
             </div>
           )}
 
-          {message && (
+          {message && !isRegister && !forgotMode && !resetMode && (
             <div style={{
               padding: '12px',
               backgroundColor: '#F0FDF4',
@@ -534,7 +563,11 @@ export default function AuthPage({ onLoginSuccess }) {
                   <button
                     key={r.id}
                     type="button"
-                    onClick={() => setLoginRole(r.id)}
+                    onClick={() => {
+                      setLoginRole(r.id);
+                      setMessage('');
+                      setError('');
+                    }}
                     style={{
                       padding: '7px 8px',
                       borderRadius: 'var(--radius-sm)',
@@ -552,29 +585,29 @@ export default function AuthPage({ onLoginSuccess }) {
               </div>
 
               <div style={{ marginBottom: '16px' }}>
-                <label>Gmail Address</label>
+                <label>{loginRole.charAt(0).toUpperCase() + loginRole.slice(1)} Gmail Address</label>
                 <input
                   type="email"
-                  id="login_email"
-                  name="login_email"
+                  id={`login_email_${loginRole}`}
+                  name={`login_email_${loginRole}`}
                   autoComplete="off"
                   placeholder={getLoginPlaceholder()}
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  value={currentLoginEmail}
+                  onChange={(e) => updateLoginForm('email', e.target.value)}
                   required
                 />
               </div>
 
               <div style={{ marginBottom: '12px' }}>
-                <label>Password</label>
+                <label>{loginRole.charAt(0).toUpperCase() + loginRole.slice(1)} Password</label>
                 <input
                   type={showPassword ? 'text' : 'password'}
-                  id="login_password"
-                  name="login_password"
+                  id={`login_password_${loginRole}`}
+                  name={`login_password_${loginRole}`}
                   autoComplete="current-password"
                   placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  value={currentLoginPassword}
+                  onChange={(e) => updateLoginForm('password', e.target.value)}
                   required
                 />
               </div>
@@ -592,7 +625,7 @@ export default function AuthPage({ onLoginSuccess }) {
                 </label>
                 <a
                   href="#forgot"
-                  onClick={(e) => { e.preventDefault(); setForgotMode(true); }}
+                  onClick={(e) => { e.preventDefault(); setForgotMode(true); setMessage(''); setError(''); }}
                   style={{ fontSize: '13px', color: 'var(--accent)', textDecoration: 'none' }}
                 >
                   Forgot password?
@@ -612,6 +645,7 @@ export default function AuthPage({ onLoginSuccess }) {
                     setIsRegister(true);
                     setStep(1);
                     setError('');
+                    setMessage('');
                   }}
                   style={{ fontWeight: '600', color: 'var(--accent)', textDecoration: 'none' }}
                 >
