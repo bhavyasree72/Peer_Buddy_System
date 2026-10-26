@@ -330,7 +330,8 @@ export default function AuthPage({ onLoginSuccess }) {
         }
 
         // 4. Block unverified users across Student, Faculty, and Mentor roles (Admin exempt)
-        if (!fbUser.emailVerified && userRole !== 'admin') {
+        const isVerified = fbUser.emailVerified || userDocData?.email_verified === 1 || userDocData?.email_verified === true;
+        if (!isVerified && userRole !== 'admin') {
           setUnverifiedEmail(trimmedEmail);
           setError('Email verification required. We sent a verification link to your Gmail address. Please verify your email before logging in.');
           return;
