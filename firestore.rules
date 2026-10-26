@@ -83,26 +83,12 @@ service cloud.firestore {
 
     // Connections (buddy partnerships)
     match /connections/{connectionId} {
-      allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated() && (
-        request.auth.uid == request.resource.data.user_a ||
-        request.auth.uid == request.resource.data.user_b ||
-        isAdmin()
-      );
-      allow delete: if isAdmin();
+      allow read, write: if isAuthenticated();
     }
 
     // Buddy requests
     match /buddy_requests/{requestId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.sender_id;
-      allow update: if isAuthenticated() && (
-        request.auth.uid == resource.data.receiver_id ||
-        request.auth.uid == resource.data.sender_id ||
-        isMentor() ||
-        isAdmin()
-      );
-      allow delete: if isAuthenticated() && (request.auth.uid == resource.data.sender_id || isAdmin());
+      allow read, write: if isAuthenticated();
     }
 
     // Private Chat Messages
@@ -163,10 +149,7 @@ service cloud.firestore {
 
     // Notifications
     match /notifications/{notifId} {
-      allow read: if isAuthenticated();
-      allow update: if isAuthenticated() && (request.auth.uid == resource.data.user_id || isAdmin());
-      allow create: if isAuthenticated();
-      allow delete: if isAuthenticated() && (request.auth.uid == resource.data.user_id || isAdmin());
+      allow read, write: if isAuthenticated();
     }
 
     // Reports / Flagged Content

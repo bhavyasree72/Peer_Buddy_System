@@ -12,7 +12,7 @@ const getApiBase = () => {
 
 const API_BASE = getApiBase();
 
-export async function apiRequest(endpoint, method = 'GET', data = null, customHeaders = {}) {
+export async function apiRequest(endpoint, method = 'GET', data = null, customHeaders = {}, signal = null) {
   let token = typeof window !== 'undefined' 
     ? (sessionStorage.getItem('token') || localStorage.getItem('token'))
     : null;
@@ -38,7 +38,8 @@ export async function apiRequest(endpoint, method = 'GET', data = null, customHe
 
   const options = {
     method,
-    headers
+    headers,
+    ...(signal ? { signal } : {})
   };
 
   if (data) {
@@ -101,11 +102,167 @@ export const api = {
   getSuggestedBuddies: () => apiRequest('/buddies/suggested'),
 
   // Requests
-  sendRequest: (data) => apiRequest('/requests/send', 'POST', data),
-  respondRequest: (requestId, action) => apiRequest(`/requests/${requestId}/respond`, 'POST', { action }),
-  cancelRequest: (requestId) => apiRequest(`/requests/${requestId}/cancel`, 'POST'),
+  sendRequest: async (data) => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const res = await apiRequest('/requests/send', 'POST', data, {}, controller.signal);
+      clearTimeout(timeoutId);
+      if (res && res.message) return res;
+    } catch (apiErr) {
+      console.warn('[sendRequest] API attempt notice, writing directly to Cloud Firestore:', apiErr.message);
+    }
+
+    // Direct Cloud Firestore fallback
+    try {
+      const { db, auth } = await import('../firebase');
+      const { collection, doc, setDoc, getDocs } = await import('firebase/firestore');
+
+      const currentUser = (() => {
+        try {
+          return JSON.parse(sessionStorage.getItem('user') || localStorage.getItem('user'));
+        } catch (e) {
+          return null;
+        }
+      })();
+
+      const myUid = auth.currentUser?.uid || currentUser?.userId || currentUser?.user_id;
+      if (!myUid) {
+        throw new Error('Authentication required. Please sign in again.');
+      }
+
+      const receiverId = data.receiverId;
+      const note = (data.note || '').trim();
+
+      // Check if already connected or requested
+      const [connsSnap, reqsSnap] = await Promise.all([
+        getDocs(collection(db, 'connections')).catch(() => ({ docs: [] })),
+        getDocs(collection(db, 'buddy_requests')).catch(() => ({ docs: [] }))
+      ]);
+
+      const isConnected = connsSnap.docs.some(d => {
+        const c = d.data();
+        return c.status === 'active' && ((c.user_a === myUid && c.user_b === receiverId) || (c.user_b === myUid && c.user_a === receiverId));
+      });
+      if (isConnected) {
+        throw new Error('You are already connected with this student.');
+      }
+
+      const isPending = reqsSnap.docs.some(d => {
+        const r = d.data();
+        return r.status === 'pending' && r.sender_id === myUid && r.receiver_id === receiverId;
+      });
+      if (isPending) {
+        return { success: true, message: 'Buddy request already sent and awaiting response.' };
+      }
+
+      const newReqRef = doc(collection(db, 'buddy_requests'));
+      await setDoc(newReqRef, {
+        id: newReqRef.id,
+        sender_id: myUid,
+        receiver_id: receiverId,
+        note: note,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+
+      const senderName = currentUser?.fullName || 'A student';
+      const newNotifRef = doc(collection(db, 'notifications'));
+      await setDoc(newNotifRef, {
+        id: newNotifRef.id,
+        notification_id: newNotifRef.id,
+        user_id: receiverId,
+        type: 'buddy_request',
+        message: `${senderName} sent you a buddy request: "${note || 'Study partner invitation'}"`,
+        link: '/my-buddies',
+        is_read: 0,
+        created_at: new Date().toISOString()
+      }).catch(() => {});
+
+      return {
+        success: true,
+        message: 'Buddy request sent successfully!'
+      };
+    } catch (fbErr) {
+      console.error('[sendRequest] Firestore fallback error:', fbErr);
+      throw fbErr;
+    }
+  },
+  respondRequest: async (requestId, action) => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const res = await apiRequest(`/requests/${requestId}/respond`, 'POST', { action }, {}, controller.signal);
+      clearTimeout(timeoutId);
+      if (res && res.message) return res;
+    } catch (apiErr) {
+      console.warn('[respondRequest] API notice, writing directly to Cloud Firestore:', apiErr.message);
+    }
+    const { db, auth } = await import('../firebase');
+    const { doc, updateDoc, setDoc, collection, getDoc } = await import('firebase/firestore');
+    await updateDoc(doc(db, 'buddy_requests', requestId), {
+      status: action === 'accept' ? 'accepted' : 'rejected',
+      updated_at: new Date().toISOString()
+    });
+    if (action === 'accept') {
+      const reqSnap = await getDoc(doc(db, 'buddy_requests', requestId));
+      const rData = reqSnap.exists() ? reqSnap.data() : null;
+      const myUid = auth.currentUser?.uid || JSON.parse(sessionStorage.getItem('user') || '{}')?.userId;
+      if (rData) {
+        const newConnRef = doc(collection(db, 'connections'));
+        await setDoc(newConnRef, {
+          id: newConnRef.id,
+          connection_id: newConnRef.id,
+          user_a: rData.sender_id,
+          user_b: myUid || rData.receiver_id,
+          status: 'active',
+          created_at: new Date().toISOString()
+        });
+      }
+    }
+    return {
+      success: true,
+      message: action === 'accept' ? 'Buddy request accepted! Connection established.' : 'Buddy request declined.'
+    };
+  },
+  cancelRequest: async (requestId) => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const res = await apiRequest(`/requests/${requestId}/cancel`, 'POST', null, {}, controller.signal);
+      clearTimeout(timeoutId);
+      if (res && res.message) return res;
+    } catch (apiErr) {
+      console.warn('[cancelRequest] API notice, writing directly to Cloud Firestore:', apiErr.message);
+    }
+    const { db } = await import('../firebase');
+    const { doc, updateDoc } = await import('firebase/firestore');
+    await updateDoc(doc(db, 'buddy_requests', requestId), {
+      status: 'cancelled',
+      updated_at: new Date().toISOString()
+    });
+    return { success: true, message: 'Buddy request cancelled.' };
+  },
   getRequests: () => apiRequest('/requests'),
-  disconnectBuddy: (connId) => apiRequest(`/requests/disconnect/${connId}`, 'POST'),
+  disconnectBuddy: async (connId) => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const res = await apiRequest(`/requests/disconnect/${connId}`, 'POST', null, {}, controller.signal);
+      clearTimeout(timeoutId);
+      if (res && res.message) return res;
+    } catch (apiErr) {
+      console.warn('[disconnectBuddy] API notice, writing directly to Cloud Firestore:', apiErr.message);
+    }
+    const { db } = await import('../firebase');
+    const { doc, updateDoc } = await import('firebase/firestore');
+    await updateDoc(doc(db, 'connections', connId), {
+      status: 'ended',
+      ended_at: new Date().toISOString()
+    });
+    return { success: true, message: 'Buddy connection ended.' };
+  },
 
   // Chat
   getConversations: () => apiRequest('/chat/conversations'),

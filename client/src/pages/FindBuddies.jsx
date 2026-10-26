@@ -218,7 +218,7 @@ export default function FindBuddies({ onSelectProfile }) {
         note: requestText
       });
       setBuddies(prev => prev.map(b => (b.userId === targetUserId ? { ...b, pendingRequest: true } : b)));
-      alert(res.message);
+      alert(res.message || 'Buddy request sent successfully!');
       setShowNoteModal(null);
       setRequestText('');
       doSearch();
@@ -227,7 +227,7 @@ export default function FindBuddies({ onSelectProfile }) {
         setBuddies(prev => prev.map(b => (b.userId === targetUserId ? { ...b, pendingRequest: true } : b)));
         setShowNoteModal(null);
       }
-      alert(err.message);
+      alert(err.message || 'Unable to send request. Please try again.');
     } finally {
       setSubmittingRequest(false);
     }
