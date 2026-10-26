@@ -68,7 +68,7 @@ export default function ResourcesPage({ user }) {
     }
 
     try {
-      const token = localStorage.getItem('token');
+      const token = sessionStorage.getItem('token') || localStorage.getItem('token');
       const res = await fetch(`/api/mentor/resources/${resource.resource_id}/download`, {
         headers: {
           'Authorization': `Bearer ${token}`

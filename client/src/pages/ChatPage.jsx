@@ -10,6 +10,7 @@ export default function ChatPage({ initialConnectionId, onNavigateSchedule, onSe
   const [text, setText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [isTyping, setIsTyping] = useState(false);
+  const [sending, setSending] = useState(false);
   const [buddyOnline, setBuddyOnline] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
 
@@ -23,7 +24,9 @@ export default function ChatPage({ initialConnectionId, onNavigateSchedule, onSe
     loadConversations();
 
     // Socket.io initialization
-    const token = localStorage.getItem('token');
+    const token = typeof window !== 'undefined'
+      ? (sessionStorage.getItem('token') || localStorage.getItem('token'))
+      : null;
     const socket = io({
       auth: { token }
     });
@@ -31,7 +34,13 @@ export default function ChatPage({ initialConnectionId, onNavigateSchedule, onSe
 
     socket.on('new_message', (msg) => {
       if (msg.connection_id === activeConnId) {
-        setMessages(prev => [...prev, msg]);
+        setMessages(prev => {
+          const msgId = msg.message_id || msg.id;
+          if (msgId && prev.some(m => (m.message_id || m.id) === msgId)) {
+            return prev;
+          }
+          return [...prev, msg];
+        });
         scrollToBottom();
       }
       loadConversations();
@@ -68,19 +77,30 @@ export default function ChatPage({ initialConnectionId, onNavigateSchedule, onSe
   async function loadConversations() {
     try {
       const res = await api.getConversations();
-      setConversations(res.conversations || []);
-      if (!activeConnId && res.conversations && res.conversations.length > 0) {
-        setActiveConnId(res.conversations[0].connection_id);
-      }
+      const list = res.conversations || [];
+      setConversations(list);
+      setActiveConnId(prev => {
+        if (prev && list.some(c => c.connection_id === prev)) return prev;
+        if (prev) return prev; // Do not clear active conversation during reload
+        return list.length > 0 ? list[0].connection_id : null;
+      });
     } catch (err) {
       console.error(err);
     }
   }
 
   async function loadMessages(connId) {
+    if (!connId) return;
     try {
       const res = await api.getMessages(connId);
-      setMessages(res.messages || []);
+      const seen = new Set();
+      const deduped = (res.messages || []).filter(m => {
+        const id = m.message_id || m.id;
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      setMessages(deduped);
       scrollToBottom();
     } catch (err) {
       console.error(err);
@@ -97,34 +117,56 @@ export default function ChatPage({ initialConnectionId, onNavigateSchedule, onSe
 
   async function handleSend(e) {
     e.preventDefault();
-    if (!text.trim() && !selectedFile) return;
+    if (sending || (!text.trim() && !selectedFile)) return;
+
+    setSending(true);
+    const currentSendingText = text;
+    const currentSendingFile = selectedFile;
+    const targetConnId = activeConnId;
 
     try {
       const formData = new FormData();
-      formData.append('connectionId', activeConnId);
-      if (text.trim()) formData.append('body', text.trim());
-      if (selectedFile) formData.append('attachment', selectedFile);
+      formData.append('connectionId', targetConnId);
+      if (currentSendingText.trim()) formData.append('body', currentSendingText.trim());
+      if (currentSendingFile) formData.append('attachment', currentSendingFile);
+
+      // Optimistically clear inputs without losing active state
+      setText('');
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
 
       const res = await api.sendMessage(formData);
 
-      if (socketRef.current && res.chatMessage) {
-        socketRef.current.emit('send_message', {
-          connectionId: activeConnId,
-          messageId: res.chatMessage.message_id,
-          body: res.chatMessage.body,
-          attachmentUrl: res.chatMessage.attachment_url,
-          attachmentName: res.chatMessage.attachment_name,
-          attachmentType: res.chatMessage.attachment_type,
-          sentAt: res.chatMessage.sent_at
+      if (res && res.chatMessage) {
+        setMessages(prev => {
+          const mId = res.chatMessage.message_id || res.chatMessage.id;
+          if (mId && prev.some(m => (m.message_id || m.id) === mId)) {
+            return prev;
+          }
+          return [...prev, res.chatMessage];
         });
+        scrollToBottom();
+
+        if (socketRef.current) {
+          socketRef.current.emit('send_message', {
+            connectionId: targetConnId,
+            messageId: res.chatMessage.message_id,
+            body: res.chatMessage.body,
+            attachmentUrl: res.chatMessage.attachment_url,
+            attachmentName: res.chatMessage.attachment_name,
+            attachmentType: res.chatMessage.attachment_type,
+            sentAt: res.chatMessage.sent_at
+          });
+        }
       }
 
-      setText('');
-      setSelectedFile(null);
-      loadMessages(activeConnId);
       loadConversations();
     } catch (err) {
-      alert(err.message);
+      alert(err.message || 'Failed to send message');
+      setText(currentSendingText);
+      setSelectedFile(currentSendingFile);
+    } finally {
+      setSending(false);
     }
   }
 
@@ -423,7 +465,7 @@ export default function ChatPage({ initialConnectionId, onNavigateSchedule, onSe
                 style={{ flex: 1, minHeight: '40px' }}
               />
 
-              <button type="submit" className="btn-primary" style={{ width: '40px', minHeight: '40px', padding: 0 }}>
+              <button type="submit" className="btn-primary" disabled={sending} style={{ width: '40px', minHeight: '40px', padding: 0 }}>
                 <Send size={16} />
               </button>
             </form>

@@ -1,53 +1,77 @@
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
-const { query } = require('../database/db');
+const crypto = require('crypto');
+const {
+  COLLECTIONS,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  queryDocs,
+  getAllDocs,
+  countDocs,
+  nowISO
+} = require('../database/firestoreDb');
 
 // GET /api/admin/dashboard
 async function getAdminDashboard(req, res) {
   try {
-    const totalUsers = (await query("SELECT COUNT(*) as c FROM users WHERE status != 'deleted'")).rows[0].c;
-    
-    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const activeThisWeek = (await query('SELECT COUNT(*) as c FROM users WHERE last_login >= $1', [oneWeekAgo])).rows[0].c;
+    const allUsers = await getAllDocs(COLLECTIONS.USERS);
+    const nonDeletedUsers = allUsers.filter(u => u.status !== 'deleted');
+    const totalUsers = nonDeletedUsers.length;
 
-    const openReports = (await query("SELECT COUNT(*) as c FROM reports WHERE status IN ('Submitted', 'Under review')")).rows[0].c;
+    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const activeThisWeek = nonDeletedUsers.filter(u => u.last_login && u.last_login >= oneWeekAgo).length;
+
+    const allReports = await getAllDocs(COLLECTIONS.REPORTS);
+    const openReports = allReports.filter(r => ['Submitted', 'Under review'].includes(r.status)).length;
 
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-    const sessionsThisMonth = (await query('SELECT COUNT(*) as c FROM study_sessions WHERE start_at >= $1', [startOfMonth])).rows[0].c;
+    const allSessions = await getAllDocs(COLLECTIONS.STUDY_SESSIONS);
+    const sessionsThisMonth = allSessions.filter(s => s.start_at && s.start_at >= startOfMonth).length;
 
-    // Requests statistics
-    const totalRequests = (await query('SELECT COUNT(*) as c FROM buddy_requests')).rows[0].c;
-    const acceptedRequests = (await query("SELECT COUNT(*) as c FROM buddy_requests WHERE status = 'accepted'")).rows[0].c;
+    const allRequests = await getAllDocs(COLLECTIONS.BUDDY_REQUESTS);
+    const totalRequests = allRequests.length;
+    const acceptedRequests = allRequests.filter(r => r.status === 'accepted').length;
 
-    // Real charts data: Registrations & Sessions over last 7 days
+    // Real charts data: Registrations, Sessions, Requests over last 7 days
     const now = new Date();
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const trendData = [];
+
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
       const dateStr = d.toISOString().split('T')[0];
-      const startOfDay = new Date(`${dateStr}T00:00:00.000Z`).toISOString();
-      const endOfDay = new Date(new Date(`${dateStr}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000).toISOString();
+      const startOfDay = `${dateStr}T00:00:00.000Z`;
+      const endOfDay = new Date(new Date(startOfDay).getTime() + 24 * 60 * 60 * 1000).toISOString();
 
-      const regCount = (await query(`SELECT COUNT(*) as c FROM users WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz`, [startOfDay, endOfDay])).rows[0].c || 0;
-      const sessCount = (await query(`SELECT COUNT(*) as c FROM study_sessions WHERE start_at >= $1::timestamptz AND start_at < $2::timestamptz`, [startOfDay, endOfDay])).rows[0].c || 0;
-      const reqCount = (await query(`SELECT COUNT(*) as c FROM buddy_requests WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz`, [startOfDay, endOfDay])).rows[0].c || 0;
+      const regCount = allUsers.filter(u => u.created_at && u.created_at >= startOfDay && u.created_at < endOfDay).length;
+      const sessCount = allSessions.filter(s => s.start_at && s.start_at >= startOfDay && s.start_at < endOfDay).length;
+      const reqCount = allRequests.filter(r => r.created_at && r.created_at >= startOfDay && r.created_at < endOfDay).length;
+
       trendData.push({
         day: days[d.getDay()],
         date: dateStr,
-        registrations: parseInt(regCount, 10),
-        sessions: parseInt(sessCount, 10),
-        requests: parseInt(reqCount, 10)
+        registrations: regCount,
+        sessions: sessCount,
+        requests: reqCount
       });
     }
 
     // Role breakdown
-    const roleStats = (await query(`SELECT role, COUNT(*) as c FROM users GROUP BY role`)).rows;
+    const roleCountMap = {};
+    nonDeletedUsers.forEach(u => {
+      const r = u.role || 'student';
+      roleCountMap[r] = (roleCountMap[r] || 0) + 1;
+    });
+    const roleStats = Object.entries(roleCountMap).map(([role, c]) => ({ role, c }));
 
     // Settings
-    const settingsRows = (await query('SELECT * FROM settings')).rows;
+    const allSettings = await getAllDocs(COLLECTIONS.SETTINGS);
     const settingsMap = {};
-    settingsRows.forEach(s => { settingsMap[s.key] = s.value; });
+    allSettings.forEach(s => {
+      if (s.key) settingsMap[s.key] = s.value;
+    });
 
     return res.json({
       metrics: {
@@ -71,12 +95,21 @@ async function getAdminDashboard(req, res) {
 // Master Data CRUD endpoints
 async function getMasterDataAll(req, res) {
   try {
-    const schools = (await query('SELECT * FROM schools ORDER BY name ASC')).rows;
-    const programs = (await query('SELECT * FROM programs ORDER BY name ASC')).rows;
-    const skills = (await query('SELECT * FROM skills ORDER BY category, name ASC')).rows;
-    const interests = (await query('SELECT * FROM interests ORDER BY category, name ASC')).rows;
+    const rawSchools = await getAllDocs(COLLECTIONS.SCHOOLS);
+    const schools = rawSchools.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    const rawPrograms = await getAllDocs(COLLECTIONS.PROGRAMS);
+    const programs = rawPrograms.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    const rawSkills = await getAllDocs(COLLECTIONS.SKILLS);
+    const skills = rawSkills.sort((a, b) => ((a.category || '') + (a.name || '')).localeCompare((b.category || '') + (b.name || '')));
+
+    const rawInterests = await getAllDocs(COLLECTIONS.INTERESTS);
+    const interests = rawInterests.sort((a, b) => ((a.category || '') + (a.name || '')).localeCompare((b.category || '') + (b.name || '')));
+
     return res.json({ schools, programs, skills, interests });
   } catch (err) {
+    console.error('getMasterDataAll error:', err);
     return res.status(500).json({ error: 'Failed to load master data.' });
   }
 }
@@ -84,24 +117,56 @@ async function getMasterDataAll(req, res) {
 async function addMasterItem(req, res) {
   try {
     const adminId = req.user.userId;
-    const { type, data } = req.body; // type: 'school', 'program', 'skill', 'interest'
+    const { type, data } = req.body;
+
     if (type === 'school') {
-      const id = data.id || `sch-${data.code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-      await query('INSERT INTO schools (id, name, code, semesters) VALUES (?, ?, ?, ?)', [id, data.name, data.code, data.semesters || 8]);
+      const id = data.id || `sch-${(data.code || '').toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+      await setDoc(COLLECTIONS.SCHOOLS, id, {
+        id,
+        name: data.name,
+        code: data.code,
+        semesters: Number(data.semesters) || 8
+      });
     } else if (type === 'program') {
       const id = data.id || `prog-${uuidv4().slice(0, 8)}`;
-      await query('INSERT INTO programs (id, school_id, name, code) VALUES (?, ?, ?, ?)', [id, data.school_id, data.name, data.code]);
+      await setDoc(COLLECTIONS.PROGRAMS, id, {
+        id,
+        school_id: data.school_id,
+        name: data.name,
+        code: data.code
+      });
     } else if (type === 'skill') {
       const id = `sk-${uuidv4().slice(0, 8)}`;
-      await query('INSERT INTO skills (skill_id, name, category, approved) VALUES (?, ?, ?, 1)', [id, data.name, data.category || 'Technology']);
+      await setDoc(COLLECTIONS.SKILLS, id, {
+        skill_id: id,
+        id,
+        name: data.name,
+        category: data.category || 'Technology',
+        approved: 1
+      });
     } else if (type === 'interest') {
       const id = `int-${uuidv4().slice(0, 8)}`;
-      await query('INSERT INTO interests (interest_id, name, category, approved) VALUES (?, ?, ?, 1)', [id, data.name, data.category || 'Academic']);
+      await setDoc(COLLECTIONS.INTERESTS, id, {
+        interest_id: id,
+        id,
+        name: data.name,
+        category: data.category || 'Academic',
+        approved: 1
+      });
     }
-    await query(`INSERT INTO audit_log (log_id, actor_id, action, details) VALUES (?, ?, 'MASTER_DATA_ADD', ?)`, [uuidv4(), adminId, `Added master ${type}: ${data.name}`]);
+
+    const logId = uuidv4();
+    await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+      log_id: logId,
+      actor_id: adminId,
+      action: 'MASTER_DATA_ADD',
+      details: `Added master ${type}: ${data.name}`,
+      created_at: nowISO()
+    });
+
     return res.status(201).json({ message: `${type} added successfully.` });
   } catch (err) {
-    console.error(err);
+    console.error('addMasterItem error:', err);
     return res.status(500).json({ error: err.message || 'Failed to add item.' });
   }
 }
@@ -110,18 +175,29 @@ async function deleteMasterItem(req, res) {
   try {
     const adminId = req.user.userId;
     const { type, id } = req.body;
+
     if (type === 'school') {
-      await query('DELETE FROM schools WHERE id = ?', [id]);
+      await deleteDoc(COLLECTIONS.SCHOOLS, id);
     } else if (type === 'program') {
-      await query('DELETE FROM programs WHERE id = ?', [id]);
+      await deleteDoc(COLLECTIONS.PROGRAMS, id);
     } else if (type === 'skill') {
-      await query('DELETE FROM skills WHERE skill_id = ?', [id]);
+      await deleteDoc(COLLECTIONS.SKILLS, id);
     } else if (type === 'interest') {
-      await query('DELETE FROM interests WHERE interest_id = ?', [id]);
+      await deleteDoc(COLLECTIONS.INTERESTS, id);
     }
-    await query(`INSERT INTO audit_log (log_id, actor_id, action, details) VALUES (?, ?, 'MASTER_DATA_DELETE', ?)`, [uuidv4(), adminId, `Deleted master ${type}: ${id}`]);
+
+    const logId = uuidv4();
+    await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+      log_id: logId,
+      actor_id: adminId,
+      action: 'MASTER_DATA_DELETE',
+      details: `Deleted master ${type}: ${id}`,
+      created_at: nowISO()
+    });
+
     return res.json({ message: `${type} deleted successfully.` });
   } catch (err) {
+    console.error('deleteMasterItem error:', err);
     return res.status(500).json({ error: 'Failed to delete item.' });
   }
 }
@@ -129,9 +205,10 @@ async function deleteMasterItem(req, res) {
 // Announcements endpoints
 async function getAnnouncements(req, res) {
   try {
-    const banner = (await query("SELECT value FROM settings WHERE key = 'announcement_banner'")).rows[0];
+    const banner = await getDoc(COLLECTIONS.SETTINGS, 'announcement_banner');
     return res.json({ announcement: banner ? banner.value : '' });
   } catch (err) {
+    console.error('getAnnouncements error:', err);
     return res.status(500).json({ error: 'Failed to load announcements.' });
   }
 }
@@ -140,10 +217,24 @@ async function saveAnnouncement(req, res) {
   try {
     const adminId = req.user.userId;
     const { announcement } = req.body;
-    await query("UPDATE settings SET value = ? WHERE key = 'announcement_banner'", [announcement || '']);
-    await query(`INSERT INTO audit_log (log_id, actor_id, action, details) VALUES (?, ?, 'ANNOUNCEMENT_UPDATED', ?)`, [uuidv4(), adminId, announcement ? `Updated banner: ${announcement}` : 'Cleared banner']);
+
+    await setDoc(COLLECTIONS.SETTINGS, 'announcement_banner', {
+      key: 'announcement_banner',
+      value: announcement || ''
+    });
+
+    const logId = uuidv4();
+    await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+      log_id: logId,
+      actor_id: adminId,
+      action: 'ANNOUNCEMENT_UPDATED',
+      details: announcement ? `Updated banner: ${announcement}` : 'Cleared banner',
+      created_at: nowISO()
+    });
+
     return res.json({ message: 'Announcement banner updated successfully.' });
   } catch (err) {
+    console.error('saveAnnouncement error:', err);
     return res.status(500).json({ error: 'Failed to update announcement.' });
   }
 }
@@ -153,36 +244,64 @@ async function getUsers(req, res) {
   try {
     const { q, role, status } = req.query;
 
-    let sql = `
-      SELECT u.user_id, u.sap_id, u.email, u.role, u.status, u.email_verified, u.created_at, u.last_login,
-             COALESCE(sp.full_name, stp.full_name, 'Unknown') as full_name,
-             p.name as program_name, s.name as school_name
-      FROM users u
-      LEFT JOIN student_profiles sp ON u.user_id = sp.user_id
-      LEFT JOIN staff_profiles stp ON u.user_id = stp.user_id
-      LEFT JOIN programs p ON sp.program_id = p.id
-      LEFT JOIN schools s ON sp.school_id = s.id
-      WHERE 1=1
-    `;
-    const params = [];
+    const allUsers = await getAllDocs(COLLECTIONS.USERS);
+    const programs = await getAllDocs(COLLECTIONS.PROGRAMS);
+    const progMap = new Map(programs.map(p => [p.id, p.name]));
+    const schools = await getAllDocs(COLLECTIONS.SCHOOLS);
+    const schoolMap = new Map(schools.map(s => [s.id, s.name]));
+
+    let filtered = allUsers;
 
     if (role) {
-      sql += ' AND u.role = ?';
-      params.push(role);
+      filtered = filtered.filter(u => u.role === role);
     }
     if (status) {
-      sql += ' AND u.status = ?';
-      params.push(status);
-    }
-    if (q) {
-      sql += " AND (LOWER(u.email) LIKE ? OR LOWER(u.sap_id) LIKE ? OR LOWER(COALESCE(sp.full_name, stp.full_name, '')) LIKE ?)";
-      params.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
+      filtered = filtered.filter(u => u.status === status);
     }
 
-    sql += ' ORDER BY u.created_at DESC';
+    const users = [];
+    for (const u of filtered) {
+      const uId = u.user_id || u.id;
+      let sp = null;
+      let stp = null;
 
-    const usersRes = await query(sql, params);
-    return res.json({ users: usersRes.rows });
+      if (u.role === 'student') {
+        sp = await getDoc(COLLECTIONS.STUDENT_PROFILES, uId);
+      } else {
+        stp = await getDoc(COLLECTIONS.STAFF_PROFILES, uId);
+      }
+
+      const fullName = (sp && sp.full_name) || (stp && stp.full_name) || 'Unknown';
+      const programName = sp && sp.program_id ? (progMap.get(sp.program_id) || null) : null;
+      const schoolName = sp && sp.school_id ? (schoolMap.get(sp.school_id) || null) : null;
+
+      if (q) {
+        const qLower = q.toLowerCase();
+        const emailMatch = u.email && u.email.toLowerCase().includes(qLower);
+        const sapMatch = u.sap_id && String(u.sap_id).toLowerCase().includes(qLower);
+        const nameMatch = fullName.toLowerCase().includes(qLower);
+        if (!emailMatch && !sapMatch && !nameMatch) {
+          continue;
+        }
+      }
+
+      users.push({
+        user_id: uId,
+        sap_id: u.sap_id || null,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        email_verified: u.email_verified || 1,
+        created_at: u.created_at,
+        last_login: u.last_login || null,
+        full_name: fullName,
+        program_name: programName,
+        school_name: schoolName
+      });
+    }
+
+    users.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+    return res.json({ users });
   } catch (err) {
     console.error('getUsers error:', err);
     return res.status(500).json({ error: 'Failed to fetch users.' });
@@ -194,52 +313,74 @@ async function updateUserStatus(req, res) {
   try {
     const adminId = req.user.userId;
     const { userId } = req.params;
-    const { status, role } = req.body; // status: 'active', 'suspended', 'deleted'
+    const { status, role } = req.body;
 
     if (status) {
       if (status === 'deleted') {
-        // Anonymization rule from doc 6.3:
-        // "Deleting a user anonymizes their name in old chats, reviews and reports instead of removing the rows,
-        // so other students' history stays intact."
-        await query(`
-          UPDATE student_profiles 
-          SET full_name = 'Former Student', bio = NULL, photo_url = NULL 
-          WHERE user_id = ?
-        `, [userId]);
+        // Anonymization
+        const sp = await getDoc(COLLECTIONS.STUDENT_PROFILES, userId);
+        if (sp) {
+          await updateDoc(COLLECTIONS.STUDENT_PROFILES, userId, {
+            full_name: 'Former Student',
+            bio: null,
+            photo_url: null
+          });
+        }
 
-        await query(`
-          UPDATE staff_profiles 
-          SET full_name = 'Former Staff', expertise = NULL, photo_url = NULL 
-          WHERE user_id = ?
-        `, [userId]);
+        const stp = await getDoc(COLLECTIONS.STAFF_PROFILES, userId);
+        if (stp) {
+          await updateDoc(COLLECTIONS.STAFF_PROFILES, userId, {
+            full_name: 'Former Staff',
+            expertise: null,
+            photo_url: null
+          });
+        }
 
-        await query("UPDATE users SET status = 'deleted', sap_id = NULL WHERE user_id = ?", [userId]);
+        await updateDoc(COLLECTIONS.USERS, userId, {
+          status: 'deleted',
+          sap_id: null
+        });
 
-        await query(`
-          INSERT INTO audit_log (log_id, actor_id, action, target, details)
-          VALUES (?, ?, 'USER_DELETED_ANONYMIZED', ?, 'User marked deleted and personal data anonymized')
-        `, [uuidv4(), adminId, userId]);
+        const logId = uuidv4();
+        await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+          log_id: logId,
+          actor_id: adminId,
+          action: 'USER_DELETED_ANONYMIZED',
+          target: userId,
+          details: 'User marked deleted and personal data anonymized',
+          created_at: nowISO()
+        });
 
         return res.json({ message: 'User deleted and profile anonymized.' });
       } else {
-        await query('UPDATE users SET status = ? WHERE user_id = ?', [status, userId]);
+        await updateDoc(COLLECTIONS.USERS, userId, { status });
 
-        await query(`
-          INSERT INTO audit_log (log_id, actor_id, action, target, details)
-          VALUES (?, ?, 'USER_STATUS_CHANGE', ?, ?)
-        `, [uuidv4(), adminId, userId, `Status changed to ${status}`]);
+        const logId = uuidv4();
+        await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+          log_id: logId,
+          actor_id: adminId,
+          action: 'USER_STATUS_CHANGE',
+          target: userId,
+          details: `Status changed to ${status}`,
+          created_at: nowISO()
+        });
 
         return res.json({ message: `User status changed to ${status}.` });
       }
     }
 
     if (role) {
-      await query('UPDATE users SET role = ? WHERE user_id = ?', [role, userId]);
+      await updateDoc(COLLECTIONS.USERS, userId, { role });
 
-      await query(`
-        INSERT INTO audit_log (log_id, actor_id, action, target, details)
-        VALUES (?, ?, 'USER_ROLE_CHANGE', ?, ?)
-      `, [uuidv4(), adminId, userId, `Role updated to ${role}`]);
+      const logId = uuidv4();
+      await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+        log_id: logId,
+        actor_id: adminId,
+        action: 'USER_ROLE_CHANGE',
+        target: userId,
+        details: `Role updated to ${role}`,
+        created_at: nowISO()
+      });
 
       return res.json({ message: `User role changed to ${role}.` });
     }
@@ -255,49 +396,63 @@ async function updateUserStatus(req, res) {
 async function bulkImportUsers(req, res) {
   try {
     const adminId = req.user.userId;
-    const { students } = req.body; // array of { fullName, sapId, email, schoolCode, programCode, semester }
+    const { students } = req.body;
 
     if (!Array.isArray(students) || students.length === 0) {
       return res.status(400).json({ error: 'A list of students is required for bulk import.' });
     }
 
-    const crypto = require('crypto');
     let imported = 0;
     const generatedCredentials = [];
+    const allUsers = await getAllDocs(COLLECTIONS.USERS);
 
     for (const s of students) {
       if (!s.email || !s.sapId) continue;
       const email = s.email.trim().toLowerCase();
-      const existing = await query('SELECT user_id FROM users WHERE email = ? OR sap_id = ?', [email, s.sapId]);
-      if (existing.rowCount === 0) {
-        // Generate random secure temporary password
+      const sapId = String(s.sapId).trim();
+
+      const exists = allUsers.some(u => u.email === email || (u.sap_id && String(u.sap_id) === sapId));
+      if (!exists) {
         const tempPassword = `PB@${crypto.randomBytes(4).toString('hex')}!${Math.floor(10 + Math.random() * 90)}`;
         const passwordHash = await bcrypt.hash(tempPassword, 10);
         const userId = uuidv4();
+        const now = nowISO();
 
-        await query(`
-          INSERT INTO users (user_id, sap_id, email, password_hash, role, status, email_verified)
-          VALUES (?, ?, ?, ?, 'student', 'active', 1)
-        `, [userId, s.sapId, email, passwordHash]);
+        await setDoc(COLLECTIONS.USERS, userId, {
+          user_id: userId,
+          sap_id: sapId,
+          email,
+          password_hash: passwordHash,
+          role: 'student',
+          status: 'active',
+          email_verified: 1,
+          created_at: now
+        });
 
-        await query(`
-          INSERT INTO student_profiles (user_id, full_name, semester, profile_completeness)
-          VALUES (?, ?, ?, 30)
-        `, [userId, s.fullName || 'Student', s.semester || 1]);
+        await setDoc(COLLECTIONS.STUDENT_PROFILES, userId, {
+          user_id: userId,
+          full_name: s.fullName || 'Student',
+          semester: Number(s.semester) || 1,
+          profile_completeness: 30
+        });
 
         imported++;
         generatedCredentials.push({
           email,
-          sapId: s.sapId,
+          sapId,
           temporaryPassword: tempPassword
         });
       }
     }
 
-    await query(`
-      INSERT INTO audit_log (log_id, actor_id, action, details)
-      VALUES (?, ?, 'BULK_USER_IMPORT', ?)
-    `, [uuidv4(), adminId, `Bulk imported ${imported} students`]);
+    const logId = uuidv4();
+    await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+      log_id: logId,
+      actor_id: adminId,
+      action: 'BULK_USER_IMPORT',
+      details: `Bulk imported ${imported} students`,
+      created_at: nowISO()
+    });
 
     return res.json({
       message: `Successfully imported ${imported} students.`,
@@ -313,21 +468,27 @@ async function bulkImportUsers(req, res) {
 // GET /api/admin/reports
 async function getReports(req, res) {
   try {
-    const reportsRes = await query(`
-      SELECT r.*,
-             rep.email as reporter_email,
-             COALESCE(rep_sp.full_name, 'Reporter') as reporter_name,
-             trg.email as target_email,
-             COALESCE(trg_sp.full_name, 'Reported Student') as target_name
-      FROM reports r
-      JOIN users rep ON r.reporter_id = rep.user_id
-      LEFT JOIN student_profiles rep_sp ON r.reporter_id = rep_sp.user_id
-      JOIN users trg ON r.reported_user_id = trg.user_id
-      LEFT JOIN student_profiles trg_sp ON r.reported_user_id = trg_sp.user_id
-      ORDER BY r.created_at DESC
-    `);
+    const allReports = await getAllDocs(COLLECTIONS.REPORTS);
+    const reports = [];
 
-    return res.json({ reports: reportsRes.rows });
+    for (const r of allReports) {
+      const repUser = await getDoc(COLLECTIONS.USERS, r.reporter_id);
+      const repSp = await getDoc(COLLECTIONS.STUDENT_PROFILES, r.reporter_id);
+
+      const trgUser = await getDoc(COLLECTIONS.USERS, r.reported_user_id);
+      const trgSp = await getDoc(COLLECTIONS.STUDENT_PROFILES, r.reported_user_id);
+
+      reports.push({
+        ...r,
+        reporter_email: repUser ? repUser.email : null,
+        reporter_name: repSp ? repSp.full_name : 'Reporter',
+        target_email: trgUser ? trgUser.email : null,
+        target_name: trgSp ? trgSp.full_name : 'Reported Student'
+      });
+    }
+
+    reports.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+    return res.json({ reports });
   } catch (err) {
     console.error('getReports error:', err);
     return res.status(500).json({ error: 'Failed to fetch moderation reports.' });
@@ -335,39 +496,38 @@ async function getReports(req, res) {
 }
 
 // POST /api/admin/reports/:reportId/action
-// Admin actions from doc: warn, suspend for a number of days, ban, or dismiss
 async function handleReportAction(req, res) {
   try {
     const adminId = req.user.userId;
     const { reportId } = req.params;
-    const { action, suspendDays, notes } = req.body; // 'warn', 'suspend', 'ban', 'dismiss'
+    const { action, suspendDays, notes } = req.body;
 
-    const reportRes = await query('SELECT * FROM reports WHERE report_id = ?', [reportId]);
-    if (reportRes.rowCount === 0) {
+    const report = await getDoc(COLLECTIONS.REPORTS, reportId);
+    if (!report) {
       return res.status(404).json({ error: 'Report not found.' });
     }
 
-    const report = reportRes.rows[0];
-
-    if (action === 'suspend') {
-      await query("UPDATE users SET status = 'suspended' WHERE user_id = ?", [report.reported_user_id]);
-    } else if (action === 'ban') {
-      await query("UPDATE users SET status = 'suspended' WHERE user_id = ?", [report.reported_user_id]);
+    if (action === 'suspend' || action === 'ban') {
+      await updateDoc(COLLECTIONS.USERS, report.reported_user_id, { status: 'suspended' });
     }
 
     const finalStatus = action === 'dismiss' ? 'Closed' : 'Action taken';
+    await updateDoc(COLLECTIONS.REPORTS, reportId, {
+      status: finalStatus,
+      handled_by: adminId,
+      action_taken: `${action.toUpperCase()}: ${notes || 'No extra notes'}`,
+      updated_at: nowISO()
+    });
 
-    await query(`
-      UPDATE reports 
-      SET status = ?, handled_by = ?, action_taken = ?, updated_at = datetime('now')
-      WHERE report_id = ?
-    `, [finalStatus, adminId, `${action.toUpperCase()}: ${notes || 'No extra notes'}`, reportId]);
-
-    // Audit log
-    await query(`
-      INSERT INTO audit_log (log_id, actor_id, action, target, details)
-      VALUES (?, ?, ?, ?, ?)
-    `, [uuidv4(), adminId, `REPORT_ACTION_${action.toUpperCase()}`, report.reported_user_id, notes || '']);
+    const logId = uuidv4();
+    await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+      log_id: logId,
+      actor_id: adminId,
+      action: `REPORT_ACTION_${action.toUpperCase()}`,
+      target: report.reported_user_id,
+      details: notes || '',
+      created_at: nowISO()
+    });
 
     return res.json({ message: `Action ${action} executed and logged.` });
   } catch (err) {
@@ -379,15 +539,20 @@ async function handleReportAction(req, res) {
 // GET /api/admin/audit-log
 async function getAuditLog(req, res) {
   try {
-    const logRes = await query(`
-      SELECT al.*, u.email as actor_email
-      FROM audit_log al
-      LEFT JOIN users u ON al.actor_id = u.user_id
-      ORDER BY al.created_at DESC
-      LIMIT 100
-    `);
+    const allLogs = await getAllDocs(COLLECTIONS.AUDIT_LOG);
+    allLogs.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+    const recentLogs = allLogs.slice(0, 100);
 
-    return res.json({ auditLog: logRes.rows });
+    const auditLog = [];
+    for (const al of recentLogs) {
+      const actor = al.actor_id ? await getDoc(COLLECTIONS.USERS, al.actor_id) : null;
+      auditLog.push({
+        ...al,
+        actor_email: actor ? actor.email : null
+      });
+    }
+
+    return res.json({ auditLog });
   } catch (err) {
     console.error('getAuditLog error:', err);
     return res.status(500).json({ error: 'Failed to load audit logs.' });
@@ -398,25 +563,27 @@ async function getAuditLog(req, res) {
 async function updateSettings(req, res) {
   try {
     const adminId = req.user.userId;
-    const { settings } = req.body; // object with key-values
+    const { settings } = req.body;
 
     if (typeof settings !== 'object') {
       return res.status(400).json({ error: 'Invalid settings payload.' });
     }
 
     for (const [key, val] of Object.entries(settings)) {
-      const existing = await query('SELECT key FROM settings WHERE key = ?', [key]);
-      if (existing.rowCount > 0) {
-        await query('UPDATE settings SET value = ? WHERE key = ?', [String(val), key]);
-      } else {
-        await query('INSERT INTO settings (key, value) VALUES (?, ?)', [key, String(val)]);
-      }
+      await setDoc(COLLECTIONS.SETTINGS, key, {
+        key,
+        value: String(val)
+      });
     }
 
-    await query(`
-      INSERT INTO audit_log (log_id, actor_id, action, details)
-      VALUES (?, ?, 'SETTINGS_UPDATED', 'Updated match weights / system settings')
-    `, [uuidv4(), adminId]);
+    const logId = uuidv4();
+    await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+      log_id: logId,
+      actor_id: adminId,
+      action: 'SETTINGS_UPDATED',
+      details: 'Updated match weights / system settings',
+      created_at: nowISO()
+    });
 
     return res.json({ message: 'Settings saved successfully.' });
   } catch (err) {
@@ -432,14 +599,17 @@ async function createMasterSkill(req, res) {
     if (!name || !category) return res.status(400).json({ error: 'Name and category required.' });
 
     const skillId = `sk-${uuidv4().slice(0, 8)}`;
-    await query('INSERT INTO skills (skill_id, name, category, approved) VALUES (?, ?, ?, 1)', [
-      skillId,
-      name.trim(),
-      category.trim()
-    ]);
+    await setDoc(COLLECTIONS.SKILLS, skillId, {
+      skill_id: skillId,
+      id: skillId,
+      name: name.trim(),
+      category: category.trim(),
+      approved: 1
+    });
 
     return res.status(201).json({ message: 'Skill created', skillId });
   } catch (err) {
+    console.error('createMasterSkill error:', err);
     return res.status(500).json({ error: 'Failed to create skill.' });
   }
 }
@@ -460,45 +630,52 @@ async function createUser(req, res) {
       return res.status(400).json({ error: 'Invalid role specified.' });
     }
 
-    const existing = await query('SELECT user_id FROM users WHERE email = ?', [trimmedEmail]);
-    if (existing.rowCount > 0) {
+    const allUsers = await getAllDocs(COLLECTIONS.USERS);
+    const existing = allUsers.find(u => u.email === trimmedEmail);
+    if (existing) {
       return res.status(400).json({ error: 'An account with this email already exists.' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
     const userId = uuidv4();
+    const now = nowISO();
 
-    await query(
-      `INSERT INTO users (user_id, sap_id, email, password_hash, role, status, email_verified)
-       VALUES (?, ?, ?, ?, ?, 'active', 1)`,
-      [userId, sapId ? sapId.trim() : null, trimmedEmail, passwordHash, role]
-    );
+    await setDoc(COLLECTIONS.USERS, userId, {
+      user_id: userId,
+      sap_id: sapId ? sapId.trim() : null,
+      email: trimmedEmail,
+      password_hash: passwordHash,
+      role,
+      status: 'active',
+      email_verified: 1,
+      created_at: now
+    });
 
     if (role === 'student') {
-      await query(
-        `INSERT INTO student_profiles (user_id, full_name, profile_completeness) VALUES (?, ?, 50)`,
-        [userId, fullName.trim()]
-      );
+      await setDoc(COLLECTIONS.STUDENT_PROFILES, userId, {
+        user_id: userId,
+        full_name: fullName.trim(),
+        profile_completeness: 50
+      });
     } else {
-      await query(
-        `INSERT INTO staff_profiles (user_id, full_name, department, designation, expertise)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          userId,
-          fullName.trim(),
-          department ? department.trim() : 'Academic Department',
-          designation ? designation.trim() : (role === 'mentor' ? 'Academic Mentor' : role === 'faculty' ? 'Faculty Member' : 'Administrator'),
-          `${role.charAt(0).toUpperCase() + role.slice(1)} at NMIMS`
-        ]
-      );
+      await setDoc(COLLECTIONS.STAFF_PROFILES, userId, {
+        user_id: userId,
+        full_name: fullName.trim(),
+        department: department ? department.trim() : 'Academic Department',
+        designation: designation ? designation.trim() : (role === 'mentor' ? 'Academic Mentor' : role === 'faculty' ? 'Faculty Member' : 'Administrator'),
+        expertise: `${role.charAt(0).toUpperCase() + role.slice(1)} at NMIMS`
+      });
     }
 
-    await query(`INSERT INTO audit_log (log_id, actor_id, action, target, details) VALUES (?, ?, 'ADMIN_USER_PROVISIONED', ?, ?)`, [
-      uuidv4(),
-      adminId,
-      trimmedEmail,
-      `Admin provisioned ${role} account for ${fullName.trim()} (${trimmedEmail})`
-    ]);
+    const logId = uuidv4();
+    await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+      log_id: logId,
+      actor_id: adminId,
+      action: 'ADMIN_USER_PROVISIONED',
+      target: trimmedEmail,
+      details: `Admin provisioned ${role} account for ${fullName.trim()} (${trimmedEmail})`,
+      created_at: now
+    });
 
     return res.status(201).json({ message: `${role.charAt(0).toUpperCase() + role.slice(1)} account created successfully.`, userId });
   } catch (err) {
@@ -508,7 +685,6 @@ async function createUser(req, res) {
 }
 
 // POST /api/admin/email-diagnostic
-// CHANGE 4: Safe admin-only diagnostic test endpoint to test Resend / SMTP live delivery
 async function sendEmailDiagnostic(req, res) {
   try {
     const { to } = req.body;
@@ -552,7 +728,6 @@ async function sendEmailDiagnostic(req, res) {
 }
 
 // POST /api/admin/allocate-student
-// Allows an authorized higher authority (Admin) to allocate/reassign a student to a specific mentor
 async function allocateStudentMentor(req, res) {
   try {
     const adminId = req.user.userId;
@@ -562,41 +737,50 @@ async function allocateStudentMentor(req, res) {
       return res.status(400).json({ error: 'Student ID and Mentor ID are required.' });
     }
 
-    // Verify student exists and is active student
-    const studentRes = await query("SELECT user_id FROM users WHERE user_id = ? AND role = 'student' AND status = 'active'", [studentId]);
-    if (studentRes.rowCount === 0) {
+    const studentUser = await getDoc(COLLECTIONS.USERS, studentId);
+    if (!studentUser || studentUser.role !== 'student' || studentUser.status !== 'active') {
       return res.status(404).json({ error: 'Active student not found.' });
     }
 
-    // Verify mentor exists and is active mentor
-    const mentorRes = await query("SELECT user_id FROM users WHERE user_id = ? AND role = 'mentor' AND status = 'active'", [mentorId]);
-    if (mentorRes.rowCount === 0) {
+    const mentorUser = await getDoc(COLLECTIONS.USERS, mentorId);
+    if (!mentorUser || mentorUser.role !== 'mentor' || mentorUser.status !== 'active') {
       return res.status(404).json({ error: 'Active mentor not found.' });
     }
 
-    // Update student's profile mentor_id
-    await query('UPDATE student_profiles SET mentor_id = ? WHERE user_id = ?', [mentorId, studentId]);
+    await updateDoc(COLLECTIONS.STUDENT_PROFILES, studentId, { mentor_id: mentorId });
 
-    // Ensure an active connection exists for one-to-one mentoring & chat
-    const existingConn = await query(`
-      SELECT connection_id FROM connections
-      WHERE ((user_a = ? AND user_b = ?) OR (user_a = ? AND user_b = ?)) AND status = 'active'
-    `, [studentId, mentorId, mentorId, studentId]);
+    // Check active connection
+    const connsA = await queryDocs(COLLECTIONS.CONNECTIONS, [
+      ['user_a', '==', studentId],
+      ['user_b', '==', mentorId]
+    ]);
+    const connsB = await queryDocs(COLLECTIONS.CONNECTIONS, [
+      ['user_a', '==', mentorId],
+      ['user_b', '==', studentId]
+    ]);
+    const existing = [...connsA, ...connsB].filter(c => c.status === 'active');
 
-    let connectionId = existingConn.rows[0]?.connection_id;
+    let connectionId = existing.length > 0 ? (existing[0].connection_id || existing[0].id) : null;
     if (!connectionId) {
       connectionId = uuidv4();
-      await query(`
-        INSERT INTO connections (connection_id, user_a, user_b, status)
-        VALUES (?, ?, ?, 'active')
-      `, [connectionId, studentId, mentorId]);
+      await setDoc(COLLECTIONS.CONNECTIONS, connectionId, {
+        connection_id: connectionId,
+        user_a: studentId,
+        user_b: mentorId,
+        status: 'active',
+        created_at: nowISO()
+      });
     }
 
-    // Audit log
-    await query(`
-      INSERT INTO audit_log (log_id, actor_id, action, target, details)
-      VALUES (?, ?, 'STUDENT_MENTOR_ALLOCATED', ?, ?)
-    `, [uuidv4(), adminId, studentId, `Allocated student ${studentId} to mentor ${mentorId}`]);
+    const logId = uuidv4();
+    await setDoc(COLLECTIONS.AUDIT_LOG, logId, {
+      log_id: logId,
+      actor_id: adminId,
+      action: 'STUDENT_MENTOR_ALLOCATED',
+      target: studentId,
+      details: `Allocated student ${studentId} to mentor ${mentorId}`,
+      created_at: nowISO()
+    });
 
     return res.json({
       message: 'Student successfully allocated to mentor.',
@@ -629,4 +813,3 @@ module.exports = {
   sendEmailDiagnostic,
   allocateStudentMentor
 };
-

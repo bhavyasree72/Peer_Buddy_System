@@ -1,220 +1,50 @@
-const fs = require('fs');
-const path = require('path');
-const { Pool } = require('pg');
+/**
+ * Database Abstraction Layer — Firebase Firestore Edition
+ * 
+ * This replaces the original PostgreSQL / SQLite dual-mode db.js.
+ * Now all data lives in Cloud Firestore.
+ *
+ * Controllers call Firestore helpers from firestoreDb.js directly.
+ * This module re-exports them and provides backward-compatible stubs
+ * for any legacy code that still calls query()/exec()/withTransaction().
+ */
 
-let pgPool = null;
-let sqlJsDB = null;
-let SQL = null;
-const dbFilePath = path.join(__dirname, '../../../peer_buddy.db');
+const fdb = require('./firestoreDb');
 
-// Check if PostgreSQL (Supabase or Render PG) is configured
-function isPostgresConfigured() {
-  return Boolean(
-    process.env.DATABASE_URL ||
-    (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD)
-  );
-}
-
-// PostgreSQL Connection Pool Setup
-function getPgPool() {
-  if (pgPool) return pgPool;
-
-  const connectionString = process.env.DATABASE_URL;
-  const poolConfig = connectionString
-    ? {
-        connectionString,
-        // Supabase / Render PG requires SSL with rejectUnauthorized: false when self-signed/proxy certs are used
-        ssl: { rejectUnauthorized: false },
-        max: 5,
-        idleTimeoutMillis: 10000,
-        connectionTimeoutMillis: 8000,
-        statement_timeout: 30000
-      }
-    : {
-        host: process.env.DB_HOST || 'localhost',
-        port: parseInt(process.env.DB_PORT || '5432', 10),
-        database: process.env.DB_NAME || 'peer_buddy',
-        user: process.env.DB_USER || 'postgres',
-        password: process.env.DB_PASSWORD || 'postgres',
-        max: 5,
-        idleTimeoutMillis: 10000,
-        connectionTimeoutMillis: 8000
-      };
-
-  pgPool = new Pool(poolConfig);
-
-  pgPool.on('error', (err) => {
-    console.error('Unexpected error on idle PostgreSQL client pool:', err.message);
-  });
-
-  return pgPool;
-}
-
-// Fallback SQLite / sql.js Database instance for local testing
-async function getSqlJsDB() {
-  if (sqlJsDB) return sqlJsDB;
-
-  if (!SQL) {
-    const initSqlJs = require('sql.js');
-    SQL = await initSqlJs();
-  }
-
-  if (fs.existsSync(dbFilePath)) {
-    const fileBuffer = fs.readFileSync(dbFilePath);
-    sqlJsDB = new SQL.Database(fileBuffer);
-  } else {
-    sqlJsDB = new SQL.Database();
-    persistSqlJs();
-  }
-
-  return sqlJsDB;
-}
-
-function persistSqlJs() {
-  if (!sqlJsDB) return;
-  const data = sqlJsDB.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(dbFilePath, buffer);
-}
-
-// Helper to convert queries between ? placeholders (SQLite) and $1, $2 (PostgreSQL)
-function convertPlaceholdersToPg(sql) {
-  let paramIndex = 1;
-  return sql.replace(/\?/g, () => `$${paramIndex++}`);
-}
-
-function normalizeSqlForEngine(sql, isPg) {
-  // NOTE: New SQL must not use double-quoted strings for literals. Use single quotes or parameterized queries.
-  let res = sql;
-  if (isPg) {
-    // Convert ? to $1, $2, ...
-    res = convertPlaceholdersToPg(res);
-    // Replace SQLite datetime('now') with CURRENT_TIMESTAMP
-    res = res.replace(/datetime\('now'\)/gi, 'CURRENT_TIMESTAMP');
-    // Replace SQLite double-quoted literals like "student" with 'student' where needed in standard queries
-    res = res.replace(/="([^"]+)"/g, "='$1'");
-    res = res.replace(/!= "([^"]+)"/g, "!= '$1'");
-    res = res.replace(/=\s*"([^"]+)"/g, "='$1'");
-    res = res.replace(/!=\s*"([^"]+)"/g, "!= '$1'");
-    res = res.replace(/IN \("([^"]+)"/g, "IN ('$1'");
-    res = res.replace(/, "([^"]+)"\)/g, ", '$1')");
-  } else {
-    // Convert $1, $2 to ? for sql.js
-    res = res.replace(/\$(\d+)/g, '?');
-    // Replace CURRENT_TIMESTAMP with datetime('now') if needed
-    res = res.replace(/CURRENT_TIMESTAMP/gi, "datetime('now')");
-  }
-  return res;
-}
-
-// Universal query function compatible with both PostgreSQL and SQLite
-async function query(sql, params = []) {
-  if (isPostgresConfigured()) {
-    const pool = getPgPool();
-    const normalized = normalizeSqlForEngine(sql, true);
-    try {
-      const res = await pool.query(normalized, params);
-      return {
-        rows: res.rows || [],
-        rowCount: res.rowCount || 0
-      };
-    } catch (err) {
-      console.error('PostgreSQL Query Error:', err.message, 'in SQL:', normalized, 'params:', params);
-      throw err;
-    }
-  } else {
-    const db = await getSqlJsDB();
-    const normalized = normalizeSqlForEngine(sql, false);
-    const trimmed = normalized.trim().toUpperCase();
-    const isSelect = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA');
-
-    try {
-      if (isSelect) {
-        const stmt = db.prepare(normalized);
-        stmt.bind(params);
-        const rows = [];
-        while (stmt.step()) {
-          rows.push(stmt.getAsObject());
-        }
-        stmt.free();
-        return { rows, rowCount: rows.length };
-      } else {
-        db.run(normalized, params);
-        persistSqlJs();
-        return { rows: [], rowCount: db.getRowsModified() };
-      }
-    } catch (err) {
-      console.error('SQLite Query Error:', err.message, 'in SQL:', normalized, 'params:', params);
-      throw err;
-    }
-  }
-}
-
-// Universal exec for schema/DDL
-async function exec(sql) {
-  if (isPostgresConfigured()) {
-    const pool = getPgPool();
-    const normalized = normalizeSqlForEngine(sql, true);
-    await pool.query(normalized);
-  } else {
-    const db = await getSqlJsDB();
-    const normalized = normalizeSqlForEngine(sql, false);
-    db.exec(normalized);
-    persistSqlJs();
-  }
-}
-
-// Transaction helper executing a callback with a dedicated client
-async function withTransaction(callback) {
-  if (isPostgresConfigured()) {
-    const pool = getPgPool();
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const txQuery = async (sql, params = []) => {
-        const normalized = normalizeSqlForEngine(sql, true);
-        const res = await client.query(normalized, params);
-        return {
-          rows: res.rows || [],
-          rowCount: res.rowCount || 0
-        };
-      };
-      const result = await callback(txQuery);
-      await client.query('COMMIT');
-      return result;
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
-  } else {
-    // For local development sql.js (in-memory WebAssembly SQLite), operations execute atomically in memory
-    try {
-      const result = await callback(query);
-      persistSqlJs();
-      return result;
-    } catch (err) {
-      throw err;
-    }
-  }
-}
-
-// Graceful pool shutdown
-async function closePool() {
-  if (pgPool) {
-    await pgPool.end();
-    pgPool = null;
-  }
-}
-
+// Re-export everything from firestoreDb for controllers
 module.exports = {
-  isPostgresConfigured,
-  getPgPool,
-  getDB: getSqlJsDB,
-  query,
-  exec,
-  withTransaction,
-  closePool,
-  persistDB: persistSqlJs
+  // Firestore helpers (new API — controllers should migrate to these)
+  ...fdb,
+
+  // Legacy stubs for any code that hasn't been migrated yet
+  // These will throw clear errors if accidentally called with SQL
+  query: async function(sql, params = []) {
+    console.error('[DB LEGACY] Raw SQL query() called — this should be migrated to Firestore helpers.');
+    console.error('[DB LEGACY] SQL:', sql);
+    throw new Error('Legacy SQL query() is no longer supported. Use Firestore helpers from firestoreDb.js.');
+  },
+
+  exec: async function(sql) {
+    // No-op for Firestore (no DDL needed — collections are auto-created)
+    console.log('[DB] exec() called (no-op in Firestore mode)');
+  },
+
+  withTransaction: async function(callback) {
+    // Map to Firestore runTransaction
+    return fdb.runTransaction(async (transaction) => {
+      // Provide a txQuery stub that warns
+      const txQuery = async (sql, params = []) => {
+        console.error('[DB LEGACY] Transaction SQL query called — migrate to Firestore helpers.');
+        throw new Error('Legacy SQL txQuery() is no longer supported.');
+      };
+      return callback(txQuery);
+    });
+  },
+
+  // Keep these for backward compat but no-op
+  isPostgresConfigured: () => false,
+  getPgPool: () => null,
+  getDB: () => null,
+  closePool: async () => {},
+  persistDB: () => {}
 };

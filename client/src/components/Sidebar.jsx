@@ -42,13 +42,10 @@ export default function Sidebar({ user, activePage, setActivePage, unreadCount, 
     { id: 'profile', label: 'Profile', icon: User }
   ];
 
-  // Faculty Navigation: Overview, Students, Sessions, Chat, Reports, Profile
+  // Faculty Navigation: Overview, Students, Profile (Chat, Sessions, and Reports strictly removed as requested)
   const facultyNav = [
     { id: 'home', label: 'Overview', icon: BarChart3 },
     { id: 'students', label: 'Students', icon: Users },
-    { id: 'faculty-sessions', label: 'Sessions', icon: Calendar },
-    { id: 'chat', label: 'Chat', icon: MessageSquare },
-    { id: 'reports', label: 'Reports', icon: ShieldAlert },
     { id: 'profile', label: 'Profile', icon: User }
   ];
 

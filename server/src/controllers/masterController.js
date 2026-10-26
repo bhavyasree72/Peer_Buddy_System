@@ -1,38 +1,62 @@
-const { query } = require('../database/db');
+const {
+  COLLECTIONS,
+  getAllDocs,
+  queryDocs,
+  getDoc
+} = require('../database/firestoreDb');
 
 // GET /api/master/all
 async function getMasterData(req, res) {
   try {
-    const schools = (await query(`
-      SELECT id, name, code, semesters 
-      FROM schools 
-      WHERE UPPER(code) IN ('STME', 'SOL', 'SPTM', 'SBM', 'SOC')
-      ORDER BY CASE UPPER(code)
-        WHEN 'STME' THEN 1
-        WHEN 'SOL' THEN 2
-        WHEN 'SPTM' THEN 3
-        WHEN 'SBM' THEN 4
-        WHEN 'SOC' THEN 5
-        ELSE 6
-      END ASC
-    `)).rows;
-    const programs = (await query('SELECT * FROM programs ORDER BY name ASC')).rows;
-    const skills = (await query('SELECT * FROM skills WHERE approved = 1 ORDER BY category, name ASC')).rows;
-    const interests = (await query('SELECT * FROM interests WHERE approved = 1 ORDER BY category, name ASC')).rows;
-    const settings = (await query('SELECT * FROM settings')).rows;
+    const rawSchools = await getAllDocs(COLLECTIONS.SCHOOLS);
+    const orderMap = { STME: 1, SOL: 2, SPTM: 3, SBM: 4, SOC: 5 };
+    const schools = rawSchools.sort((a, b) => {
+      const codeA = (a.code || '').toUpperCase();
+      const codeB = (b.code || '').toUpperCase();
+      const orderA = orderMap[codeA] || 6;
+      const orderB = orderMap[codeB] || 6;
+      return orderA - orderB;
+    });
 
+    const rawPrograms = await getAllDocs(COLLECTIONS.PROGRAMS);
+    const programs = rawPrograms.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    const rawSkills = await getAllDocs(COLLECTIONS.SKILLS);
+    const skills = rawSkills
+      .filter(s => s.approved === 1 || s.approved === true)
+      .sort((a, b) => ((a.category || '') + (a.name || '')).localeCompare((b.category || '') + (b.name || '')));
+
+    const rawInterests = await getAllDocs(COLLECTIONS.INTERESTS);
+    const interests = rawInterests
+      .filter(i => i.approved === 1 || i.approved === true)
+      .sort((a, b) => ((a.category || '') + (a.name || '')).localeCompare((b.category || '') + (b.name || '')));
+
+    const rawSettings = await getAllDocs(COLLECTIONS.SETTINGS);
     const settingsMap = {};
-    settings.forEach(s => { settingsMap[s.key] = s.value; });
+    rawSettings.forEach(s => {
+      if (s.key) settingsMap[s.key] = s.value;
+    });
 
-    const mentors = (await query(`
-      SELECT u.user_id, COALESCE(sp.full_name, stp.full_name, u.email) as full_name,
-             stp.department, stp.designation
-      FROM users u
-      LEFT JOIN student_profiles sp ON u.user_id = sp.user_id
-      LEFT JOIN staff_profiles stp ON u.user_id = stp.user_id
-      WHERE u.role = 'mentor' AND u.status = 'active'
-      ORDER BY full_name ASC
-    `)).rows;
+    const mentorUsers = await queryDocs(COLLECTIONS.USERS, [
+      ['role', '==', 'mentor'],
+      ['status', '==', 'active']
+    ]);
+
+    const mentors = [];
+    for (const u of mentorUsers) {
+      const studentProf = await getDoc(COLLECTIONS.STUDENT_PROFILES, u.user_id);
+      const staffProf = await getDoc(COLLECTIONS.STAFF_PROFILES, u.user_id);
+      const fullName = (studentProf && studentProf.full_name) ||
+                       (staffProf && staffProf.full_name) ||
+                       u.email || 'Mentor';
+      mentors.push({
+        user_id: u.user_id,
+        full_name: fullName,
+        department: staffProf ? staffProf.department : null,
+        designation: staffProf ? staffProf.designation : null
+      });
+    }
+    mentors.sort((a, b) => a.full_name.localeCompare(b.full_name));
 
     return res.json({
       schools,

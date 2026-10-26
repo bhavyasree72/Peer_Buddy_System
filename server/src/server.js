@@ -101,13 +101,20 @@ app.get('/api/health', (req, res) => {
 
 // Serve frontend build if present
 const clientBuildPath = path.join(__dirname, '../../client/dist');
-app.use(express.static(clientBuildPath));
+app.use(express.static(clientBuildPath, {
+  maxAge: 0,
+  etag: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  }
+}));
 
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'Endpoint not found.' });
   }
   const indexPath = path.join(clientBuildPath, 'index.html');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.sendFile(indexPath, (err) => {
     if (err) {
       res.status(200).send('Peer Buddy System - NMIMS API Server is running.');

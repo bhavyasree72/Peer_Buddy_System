@@ -130,7 +130,7 @@ export default function MentorStudents({ user, onSelectProfile, onNavigateChat }
                             style={{ padding: '6px 10px', fontSize: '12px', minHeight: '32px' }}
                             onClick={async () => {
                               try {
-                                const direct = await api.apiRequest('/chat/start-direct', 'POST', { targetUserId: s.user_id });
+                                const direct = await api.startDirectChat(s.user_id);
                                 onNavigateChat(direct.connectionId);
                               } catch (e) {
                                 alert(e.message || 'Could not start chat');
@@ -204,7 +204,7 @@ export default function MentorStudents({ user, onSelectProfile, onNavigateChat }
                     const targetId = viewingProfile.profile?.user_id;
                     setViewingProfile(null);
                     try {
-                      const direct = await api.apiRequest('/chat/start-direct', 'POST', { targetUserId: targetId });
+                      const direct = await api.startDirectChat(targetId);
                       onNavigateChat(direct.connectionId);
                     } catch (e) {
                       alert(e.message || 'Could not start chat');

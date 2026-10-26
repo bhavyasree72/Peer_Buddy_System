@@ -1,9 +1,4 @@
-// Enforce SQLite only for testing: delete postgres env variables before requiring db
-delete process.env.DATABASE_URL;
-delete process.env.DB_HOST;
-delete process.env.DB_USER;
-delete process.env.DB_PASSWORD;
-
+// Test runner for Firebase Firestore mode
 process.env.JWT_SECRET = 'test_jwt_secret_key_12345';
 process.env.JWT_REFRESH_SECRET = 'test_jwt_refresh_secret_key_12345';
 process.env.BOOTSTRAP_ADMIN_EMAIL = 'admin.test@gmail.com';
@@ -14,7 +9,15 @@ const assert = require('assert');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { query, isPostgresConfigured } = require('../src/database/db');
+const {
+  COLLECTIONS,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  queryDocs,
+  nowISO
+} = require('../src/database/firestoreDb');
 const migrate = require('../src/database/migrate');
 const { seedMasterData, ensureBootstrapAdmin } = require('../src/database/seed');
 const { register, login, forgotPassword, resetPassword, verifyEmail, hashToken } = require('../src/controllers/authController');
@@ -50,13 +53,10 @@ function createMockRes() {
 
 async function runTests() {
   console.log('====================================================================');
-  console.log(' NMIMS Peer Buddy System — Comprehensive Security & Regression Tests');
+  console.log(' NMIMS Peer Buddy System — Firebase & Security Regression Tests');
   console.log('====================================================================\n');
 
-  // Verify running on SQLite
-  assert.strictEqual(isPostgresConfigured(), false, 'Test runner MUST use SQLite only and never touch PostgreSQL / Supabase.');
-
-  // Initialize SQLite schema and master data
+  // Initialize master data
   await migrate();
   await seedMasterData();
   await ensureBootstrapAdmin();
@@ -68,52 +68,74 @@ async function runTests() {
   const testPassword = 'SecurePassword@123';
   const testHash = await bcrypt.hash(testPassword, 10);
 
-  const studentUserRes = await query('SELECT * FROM users WHERE email = ?', [testStudentEmail]);
-  let studentUserId = studentUserRes.rows[0]?.user_id;
-  if (!studentUserId) {
-    studentUserId = 'usr-test-student';
-    await query(`
-      INSERT INTO users (user_id, sap_id, email, password_hash, role, status, email_verified)
-      VALUES (?, '79999999999', ?, ?, 'student', 'active', 1)
-    `, [studentUserId, testStudentEmail, testHash]);
+  let studentUserId = 'usr-test-student';
+  await setDoc(COLLECTIONS.USERS, studentUserId, {
+    user_id: studentUserId,
+    sap_id: '79999999999',
+    email: testStudentEmail,
+    password_hash: testHash,
+    role: 'student',
+    status: 'active',
+    email_verified: 1,
+    failed_login_attempts: 0,
+    lockout_until: null,
+    created_at: nowISO()
+  });
 
-    await query(`
-      INSERT INTO student_profiles (user_id, full_name, school_id, program_id, semester, year, bio, study_mode, open_to_requests, show_email, show_availability, profile_completeness)
-      VALUES (?, 'Test Student', 'sch-stme', 'prog-csds', 3, 2, 'Bio', 'both', 1, 0, 1, 85)
-    `, [studentUserId]);
-  }
+  await setDoc(COLLECTIONS.STUDENT_PROFILES, studentUserId, {
+    user_id: studentUserId,
+    full_name: 'Test Student',
+    school_id: 'sch-stme',
+    program_id: 'prog-csds',
+    semester: 3,
+    year: 2,
+    bio: 'Bio',
+    study_mode: 'both',
+    open_to_requests: 1,
+    show_email: 0,
+    show_availability: 1,
+    profile_completeness: 85
+  });
 
-  const mentorUserRes = await query('SELECT * FROM users WHERE email = ?', [testMentorEmail]);
-  let mentorUserId = mentorUserRes.rows[0]?.user_id;
-  if (!mentorUserId) {
-    mentorUserId = 'usr-test-mentor';
-    await query(`
-      INSERT INTO users (user_id, email, password_hash, role, status, email_verified)
-      VALUES (?, ?, ?, 'mentor', 'active', 1)
-    `, [mentorUserId, testMentorEmail, testHash]);
+  let mentorUserId = 'usr-test-mentor';
+  await setDoc(COLLECTIONS.USERS, mentorUserId, {
+    user_id: mentorUserId,
+    email: testMentorEmail,
+    password_hash: testHash,
+    role: 'mentor',
+    status: 'active',
+    email_verified: 1,
+    created_at: nowISO()
+  });
 
-    await query(`
-      INSERT INTO staff_profiles (user_id, full_name, department, designation, expertise)
-      VALUES (?, 'Test Mentor', 'Computer Engineering', 'Senior Mentor', 'Mentoring')
-    `, [mentorUserId]);
-  }
+  await setDoc(COLLECTIONS.STAFF_PROFILES, mentorUserId, {
+    user_id: mentorUserId,
+    full_name: 'Test Mentor',
+    department: 'Computer Engineering',
+    designation: 'Senior Mentor',
+    expertise: 'Mentoring'
+  });
 
-  const facultyUserRes = await query('SELECT * FROM users WHERE email = ?', [testFacultyEmail]);
-  let facultyUserId = facultyUserRes.rows[0]?.user_id;
-  if (!facultyUserId) {
-    facultyUserId = 'usr-test-faculty';
-    await query(`
-      INSERT INTO users (user_id, email, password_hash, role, status, email_verified)
-      VALUES (?, ?, ?, 'faculty', 'active', 1)
-    `, [facultyUserId, testFacultyEmail, testHash]);
+  let facultyUserId = 'usr-test-faculty';
+  await setDoc(COLLECTIONS.USERS, facultyUserId, {
+    user_id: facultyUserId,
+    email: testFacultyEmail,
+    password_hash: testHash,
+    role: 'faculty',
+    status: 'active',
+    email_verified: 1,
+    created_at: nowISO()
+  });
 
-    await query(`
-      INSERT INTO staff_profiles (user_id, full_name, department, designation, expertise)
-      VALUES (?, 'Test Faculty', 'Computer Engineering', 'Assistant Professor', 'Research')
-    `, [facultyUserId]);
-  }
+  await setDoc(COLLECTIONS.STAFF_PROFILES, facultyUserId, {
+    user_id: facultyUserId,
+    full_name: 'Test Faculty',
+    department: 'Computer Engineering',
+    designation: 'Assistant Professor',
+    expertise: 'Research'
+  });
 
-  console.log('✓ PASS: Isolated SQLite test accounts verified.');
+  console.log('✓ PASS: Isolated test accounts verified.');
 
   // 1. Password Reset Token Security
   console.log('\n--- Password Reset & Auth Security Verification ---');
@@ -132,11 +154,11 @@ async function runTests() {
   // Single-use token invalidation
   const rawTestToken = crypto.randomBytes(32).toString('hex');
   const hashedTestToken = hashToken(rawTestToken);
-  await query('INSERT INTO password_resets (token, email, expires_at) VALUES (?, ?, ?)', [
-    hashedTestToken,
-    testStudentEmail,
-    new Date(Date.now() + 15 * 60 * 1000).toISOString()
-  ]);
+  await setDoc(COLLECTIONS.PASSWORD_RESETS, hashedTestToken, {
+    token: hashedTestToken,
+    email: testStudentEmail,
+    expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+  });
 
   const resetReqRes = createMockRes();
   await resetPassword({
@@ -144,8 +166,8 @@ async function runTests() {
   }, resetReqRes);
   assert.strictEqual(resetReqRes.statusCode, 200);
 
-  const postResetCheck = await query('SELECT * FROM password_resets WHERE token = ?', [hashedTestToken]);
-  assert.strictEqual(postResetCheck.rowCount, 0, 'Token must be deleted immediately after consumption');
+  const postResetCheck = await getDoc(COLLECTIONS.PASSWORD_RESETS, hashedTestToken);
+  assert.strictEqual(postResetCheck, null, 'Token must be deleted immediately after consumption');
 
   const reuseRes = createMockRes();
   await resetPassword({
@@ -154,7 +176,7 @@ async function runTests() {
   assert.strictEqual(reuseRes.statusCode, 400, 'Reused reset token must be rejected');
 
   // Restore password hash
-  await query("UPDATE users SET password_hash = ? WHERE email = ?", [testHash, testStudentEmail]);
+  await updateDoc(COLLECTIONS.USERS, studentUserId, { password_hash: testHash });
   console.log('✓ PASS: Password reset tokens are securely hashed and single-use.');
 
   // 2. Email domain rejection and acceptance tests
@@ -259,18 +281,18 @@ async function runTests() {
   console.log('\n--- Email Verification Token Tests ---');
   const rawVerifyToken = crypto.randomBytes(32).toString('hex');
   const hashedVerifyToken = hashToken(rawVerifyToken);
-  await query('INSERT INTO email_verifications (token, email, expires_at) VALUES (?, ?, ?)', [
-    hashedVerifyToken,
-    regStudentEmail,
-    new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-  ]);
+  await setDoc(COLLECTIONS.EMAIL_VERIFICATIONS, hashedVerifyToken, {
+    token: hashedVerifyToken,
+    email: regStudentEmail,
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  });
 
   const verifyRes = createMockRes();
   await verifyEmail({ body: { token: rawVerifyToken } }, verifyRes);
   assert.strictEqual(verifyRes.statusCode, 200);
 
-  const verifyTokenPost = await query('SELECT * FROM email_verifications WHERE token = ?', [hashedVerifyToken]);
-  assert.strictEqual(verifyTokenPost.rowCount, 0, 'Verification token must be deleted after use');
+  const verifyTokenPost = await getDoc(COLLECTIONS.EMAIL_VERIFICATIONS, hashedVerifyToken);
+  assert.strictEqual(verifyTokenPost, null, 'Verification token must be deleted after use');
   console.log('✓ PASS: Email verification works securely with token consumption.');
 
   // 4. Chat Attachment Access Control
@@ -278,16 +300,23 @@ async function runTests() {
   const connId = `conn-test-${Date.now()}`;
   const msgId = `msg-test-${Date.now()}`;
 
-  await query("INSERT INTO connections (connection_id, user_a, user_b, status) VALUES (?, ?, ?, 'active')", [
-    connId,
-    studentUserId,
-    mentorUserId
-  ]);
+  await setDoc(COLLECTIONS.CONNECTIONS, connId, {
+    connection_id: connId,
+    user_a: studentUserId,
+    user_b: mentorUserId,
+    status: 'active',
+    created_at: nowISO()
+  });
 
-  await query(`
-    INSERT INTO messages (message_id, connection_id, sender_id, body, attachment_url, attachment_name)
-    VALUES (?, ?, ?, 'Private note', 'https://example.com/test.pdf', 'test.pdf')
-  `, [msgId, connId, studentUserId]);
+  await setDoc(COLLECTIONS.MESSAGES, msgId, {
+    message_id: msgId,
+    connection_id: connId,
+    sender_id: studentUserId,
+    body: 'Private note',
+    attachment_url: 'https://example.com/test.pdf',
+    attachment_name: 'test.pdf',
+    sent_at: nowISO()
+  });
 
   const unauthDownloadRes = createMockRes();
   await downloadAttachment({
@@ -311,7 +340,10 @@ async function runTests() {
       assert.strictEqual(lockRes.statusCode, 429, '5 failed logins must trigger 429 lockout');
     }
   }
-  await query("UPDATE users SET failed_login_attempts = 0, lockout_until = NULL WHERE email = ?", [testStudentEmail]);
+  await updateDoc(COLLECTIONS.USERS, studentUserId, {
+    failed_login_attempts: 0,
+    lockout_until: null
+  });
   console.log('✓ PASS: Brute-force lockout (5 failed attempts -> 429) verified.');
 
   // 6. Session Conflict Detection
@@ -352,7 +384,7 @@ async function runTests() {
   console.log('✓ PASS: Overlapping session conflict correctly detected and rejected.');
 
   console.log('\n====================================================================');
-  console.log(' ALL TESTS PASSED ON SQLITE (0 POSTGRES WRITES)');
+  console.log(' ALL REGRESSION TESTS PASSED (100% SUCCESS)');
   console.log('====================================================================');
   process.exit(0);
 }

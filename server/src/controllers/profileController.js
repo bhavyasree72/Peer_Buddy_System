@@ -1,5 +1,17 @@
 const { v4: uuidv4 } = require('uuid');
-const { query, withTransaction } = require('../database/db');
+const {
+  COLLECTIONS,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  deleteWhere,
+  queryDocs,
+  getAllDocs,
+  countDocs,
+  nowISO,
+  getBatch
+} = require('../database/firestoreDb');
 
 // Calculate profile completeness score (0 to 100)
 function calculateCompleteness(profile, skillsCount, interestsCount, availabilityCount) {
@@ -19,108 +31,149 @@ async function getProfile(req, res) {
     const targetUserId = req.params.userId || req.user.userId;
     const isOwner = req.user.userId === targetUserId;
 
-    const userRes = await query('SELECT user_id, sap_id, email, role, status FROM users WHERE user_id = ?', [targetUserId]);
-    if (userRes.rowCount === 0) {
+    const user = await getDoc(COLLECTIONS.USERS, targetUserId);
+    if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    const user = userRes.rows[0];
-
     if (user.role === 'student') {
-      const profRes = await query(`
-        SELECT sp.*, s.name as school_name, p.name as program_name
-        FROM student_profiles sp
-        LEFT JOIN schools s ON sp.school_id = s.id
-        LEFT JOIN programs p ON sp.program_id = p.id
-        WHERE sp.user_id = ?
-      `, [targetUserId]);
-      const profile = profRes.rows[0] || {};
+      const sp = await getDoc(COLLECTIONS.STUDENT_PROFILES, targetUserId) || {};
 
-      // Skills (include approved flag so custom suggested skills show pending)
-      const skillsRes = await query(`
-        SELECT us.id, us.skill_id, us.type, us.level, sk.name, sk.category, sk.approved
-        FROM user_skills us
-        JOIN skills sk ON us.skill_id = sk.skill_id
-        WHERE us.user_id = ?
-      `, [targetUserId]);
+      let schoolName = null;
+      if (sp.school_id) {
+        const sch = await getDoc(COLLECTIONS.SCHOOLS, sp.school_id);
+        if (sch) schoolName = sch.name;
+      }
+
+      let programName = null;
+      if (sp.program_id) {
+        const prog = await getDoc(COLLECTIONS.PROGRAMS, sp.program_id);
+        if (prog) programName = prog.name;
+      }
+
+      const profile = {
+        ...sp,
+        school_name: schoolName,
+        program_name: programName
+      };
+
+      // Skills
+      const userSkills = await queryDocs(COLLECTIONS.USER_SKILLS, [['user_id', '==', targetUserId]]);
+      const skills = [];
+      for (const us of userSkills) {
+        const sk = us.skill_id ? await getDoc(COLLECTIONS.SKILLS, us.skill_id) : null;
+        skills.push({
+          id: us.id,
+          skill_id: us.skill_id,
+          type: us.type,
+          level: us.level,
+          name: sk ? sk.name : 'Unknown Skill',
+          category: sk ? sk.category : 'General',
+          approved: sk ? sk.approved : 1
+        });
+      }
 
       // Interests
-      const interestsRes = await query(`
-        SELECT ui.id, ui.interest_id, it.name, it.category
-        FROM user_interests ui
-        JOIN interests it ON ui.interest_id = it.interest_id
-        WHERE ui.user_id = ?
-      `, [targetUserId]);
+      const userInterests = await queryDocs(COLLECTIONS.USER_INTERESTS, [['user_id', '==', targetUserId]]);
+      const interests = [];
+      for (const ui of userInterests) {
+        const it = ui.interest_id ? await getDoc(COLLECTIONS.INTERESTS, ui.interest_id) : null;
+        interests.push({
+          id: ui.id,
+          interest_id: ui.interest_id,
+          name: it ? it.name : 'Unknown Interest',
+          category: it ? it.category : 'General'
+        });
+      }
 
-      // Availability (respect show_availability if not owner)
+      // Availability
       let availability = [];
-      if (isOwner || profile.show_availability) {
-        const availRes = await query(`
-          SELECT * FROM availability WHERE user_id = ? ORDER BY day_of_week, start_time
-        `, [targetUserId]);
-        availability = availRes.rows;
+      if (isOwner || sp.show_availability) {
+        availability = await queryDocs(COLLECTIONS.AVAILABILITY, [['user_id', '==', targetUserId]]);
+        availability.sort((a, b) => {
+          const dayCompare = (a.day_of_week || '').localeCompare(b.day_of_week || '');
+          if (dayCompare !== 0) return dayCompare;
+          return (a.start_time || '').localeCompare(b.start_time || '');
+        });
       }
 
       // Reviews summary
-      const reviewsRes = await query(`
-        SELECT 
-          COUNT(*) as review_count,
-          AVG(punctuality) as avg_punctuality,
-          AVG(helpfulness) as avg_helpfulness,
-          AVG(communication) as avg_communication,
-          AVG((punctuality + helpfulness + communication) / 3.0) as overall_rating
-        FROM reviews
-        WHERE reviewee_id = ?
-      `, [targetUserId]);
+      const reviews = await queryDocs(COLLECTIONS.REVIEWS, [['reviewee_id', '==', targetUserId]]);
+      const reviewCount = reviews.length;
 
-      const reviewStats = reviewsRes.rows[0] || {};
-      const reviewCount = parseInt(reviewStats.review_count || 0, 10);
-      const rating = reviewCount >= 3 ? parseFloat(reviewStats.overall_rating || 0).toFixed(1) : null;
+      let avgPunctuality = 0;
+      let avgHelpfulness = 0;
+      let avgCommunication = 0;
+      let overallRating = null;
+
+      if (reviewCount > 0) {
+        let sumP = 0, sumH = 0, sumC = 0, sumOverall = 0;
+        reviews.forEach(r => {
+          const p = Number(r.punctuality) || 0;
+          const h = Number(r.helpfulness) || 0;
+          const c = Number(r.communication) || 0;
+          sumP += p;
+          sumH += h;
+          sumC += c;
+          sumOverall += (p + h + c) / 3.0;
+        });
+        avgPunctuality = (sumP / reviewCount).toFixed(1);
+        avgHelpfulness = (sumH / reviewCount).toFixed(1);
+        avgCommunication = (sumC / reviewCount).toFixed(1);
+        if (reviewCount >= 3) {
+          overallRating = (sumOverall / reviewCount).toFixed(1);
+        }
+      }
 
       // Recent reviews list
-      const recentReviews = await query(`
-        SELECT r.review_id, r.punctuality, r.helpfulness, r.communication, r.comment, r.created_at,
-               sp.full_name as reviewer_name
-        FROM reviews r
-        JOIN student_profiles sp ON r.reviewer_id = sp.user_id
-        WHERE r.reviewee_id = ?
-        ORDER BY r.created_at DESC
-        LIMIT 5
-      `, [targetUserId]);
+      reviews.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+      const recentReviews = [];
+      for (const r of reviews.slice(0, 5)) {
+        const reviewerProf = r.reviewer_id ? await getDoc(COLLECTIONS.STUDENT_PROFILES, r.reviewer_id) : null;
+        recentReviews.push({
+          review_id: r.review_id || r.id,
+          punctuality: r.punctuality,
+          helpfulness: r.helpfulness,
+          communication: r.communication,
+          comment: r.comment,
+          created_at: r.created_at,
+          reviewer_name: reviewerProf ? reviewerProf.full_name : 'Peer Student'
+        });
+      }
 
-      const displayEmail = (isOwner || profile.show_email) ? user.email : null;
+      const displayEmail = (isOwner || sp.show_email) ? user.email : null;
 
       return res.json({
         user: {
-          userId: user.user_id,
+          userId: user.user_id || user.id,
           role: user.role,
           email: displayEmail,
           sapId: isOwner ? user.sap_id : null
         },
         profile,
-        skills: skillsRes.rows,
-        interests: interestsRes.rows,
+        skills,
+        interests,
         availability,
         reviewsCount: reviewCount,
-        overallRating: rating,
+        overallRating,
         ratingDetails: reviewCount >= 3 ? {
-          punctuality: parseFloat(reviewStats.avg_punctuality || 0).toFixed(1),
-          helpfulness: parseFloat(reviewStats.avg_helpfulness || 0).toFixed(1),
-          communication: parseFloat(reviewStats.avg_communication || 0).toFixed(1)
+          punctuality: avgPunctuality,
+          helpfulness: avgHelpfulness,
+          communication: avgCommunication
         } : null,
-        recentReviews: recentReviews.rows,
+        recentReviews,
         isOwner
       });
     } else {
       // Staff profile
-      const staffRes = await query('SELECT * FROM staff_profiles WHERE user_id = ?', [targetUserId]);
+      const staffProf = await getDoc(COLLECTIONS.STAFF_PROFILES, targetUserId) || {};
       return res.json({
         user: {
-          userId: user.user_id,
+          userId: user.user_id || user.id,
           role: user.role,
           email: user.email
         },
-        profile: staffRes.rows[0] || {},
+        profile: staffProf,
         isOwner
       });
     }
@@ -149,9 +202,9 @@ async function updateProfile(req, res) {
       department,
       designation,
       expertise,
-      skills, // array of { skillId, type: 'has' | 'wants_to_learn', level }
-      interests, // array of interestId strings
-      availability // array of { dayOfWeek, startTime, endTime }
+      skills,
+      interests,
+      availability
     } = req.body;
 
     if (req.user.role === 'student') {
@@ -159,7 +212,6 @@ async function updateProfile(req, res) {
         return res.status(400).json({ error: 'Bio must be at most 250 characters.' });
       }
 
-      // Convert empty strings to null for foreign keys and nullable fields
       const cleanSchoolId = (schoolId && String(schoolId).trim()) ? String(schoolId).trim() : null;
       const cleanProgramId = (programId && String(programId).trim()) ? String(programId).trim() : null;
       const cleanFullName = (fullName !== undefined && String(fullName).trim()) ? String(fullName).trim() : null;
@@ -172,115 +224,89 @@ async function updateProfile(req, res) {
       const cleanShowEmail = showEmail !== undefined ? (showEmail ? 1 : 0) : null;
       const cleanShowAvail = showAvailability !== undefined ? (showAvailability ? 1 : 0) : null;
 
-      const result = await withTransaction(async (txQuery) => {
-        // Ensure student profile row exists
-        const existingProf = await txQuery('SELECT user_id FROM student_profiles WHERE user_id = $1', [userId]);
-        if (existingProf.rowCount === 0) {
-          await txQuery(`
-            INSERT INTO student_profiles (user_id, full_name, school_id, program_id, semester, year, bio, study_mode, open_to_requests, show_email, show_availability, photo_url, profile_completeness)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 50)
-          `, [
-            userId,
-            cleanFullName || 'Student',
-            cleanSchoolId,
-            cleanProgramId,
-            cleanSemester || 1,
-            cleanYear || 1,
-            cleanBio,
-            cleanStudyMode || 'both',
-            cleanOpenToReq !== null ? cleanOpenToReq : 1,
-            cleanShowEmail !== null ? cleanShowEmail : 0,
-            cleanShowAvail !== null ? cleanShowAvail : 1,
-            cleanPhotoUrl
-          ]);
-        } else {
-          await txQuery(`
-            UPDATE student_profiles
-            SET full_name = COALESCE($1::varchar, full_name),
-                bio = COALESCE($2::text, bio),
-                school_id = COALESCE($3::varchar, school_id),
-                program_id = COALESCE($4::varchar, program_id),
-                semester = COALESCE($5::int, semester),
-                year = COALESCE($6::int, year),
-                study_mode = COALESCE($7::varchar, study_mode),
-                open_to_requests = COALESCE($8::int, open_to_requests),
-                show_email = COALESCE($9::int, show_email),
-                show_availability = COALESCE($10::int, show_availability),
-                photo_url = COALESCE($11::varchar, photo_url)
-            WHERE user_id = $12
-          `, [
-            cleanFullName,
-            cleanBio,
-            cleanSchoolId,
-            cleanProgramId,
-            cleanSemester,
-            cleanYear,
-            cleanStudyMode,
-            cleanOpenToReq,
-            cleanShowEmail,
-            cleanShowAvail,
-            cleanPhotoUrl,
-            userId
-          ]);
-        }
+      const existingProf = await getDoc(COLLECTIONS.STUDENT_PROFILES, userId);
 
-        // Update skills atomically inside transaction
-        if (Array.isArray(skills)) {
-          await txQuery('DELETE FROM user_skills WHERE user_id = $1', [userId]);
-          for (const s of skills) {
-            const sId = s.skillId || s.skill_id;
-            if (sId) {
-              await txQuery(
-                'INSERT INTO user_skills (id, user_id, skill_id, type, level) VALUES ($1, $2, $3, $4, $5)',
-                [uuidv4(), userId, sId, s.type || 'has', s.level || 'intermediate']
-              );
-            }
+      const profileData = {
+        user_id: userId,
+        full_name: cleanFullName !== null ? cleanFullName : (existingProf?.full_name || 'Student'),
+        school_id: cleanSchoolId !== null ? cleanSchoolId : (existingProf?.school_id || null),
+        program_id: cleanProgramId !== null ? cleanProgramId : (existingProf?.program_id || null),
+        semester: cleanSemester !== null ? cleanSemester : (existingProf?.semester || 1),
+        year: cleanYear !== null ? cleanYear : (existingProf?.year || 1),
+        bio: cleanBio !== null ? cleanBio : (existingProf?.bio || null),
+        study_mode: cleanStudyMode !== null ? cleanStudyMode : (existingProf?.study_mode || 'both'),
+        open_to_requests: cleanOpenToReq !== null ? cleanOpenToReq : (existingProf?.open_to_requests ?? 1),
+        show_email: cleanShowEmail !== null ? cleanShowEmail : (existingProf?.show_email ?? 0),
+        show_availability: cleanShowAvail !== null ? cleanShowAvail : (existingProf?.show_availability ?? 1),
+        photo_url: cleanPhotoUrl !== null ? cleanPhotoUrl : (existingProf?.photo_url || null)
+      };
+
+      await setDoc(COLLECTIONS.STUDENT_PROFILES, userId, profileData);
+
+      // Update skills
+      if (Array.isArray(skills)) {
+        await deleteWhere(COLLECTIONS.USER_SKILLS, 'user_id', '==', userId);
+        for (const s of skills) {
+          const sId = s.skillId || s.skill_id;
+          if (sId) {
+            const userSkillId = uuidv4();
+            await setDoc(COLLECTIONS.USER_SKILLS, userSkillId, {
+              id: userSkillId,
+              user_id: userId,
+              skill_id: sId,
+              type: s.type || 'has',
+              level: s.level || 'intermediate'
+            });
           }
         }
+      }
 
-        // Update interests atomically inside transaction
-        if (Array.isArray(interests)) {
-          await txQuery('DELETE FROM user_interests WHERE user_id = $1', [userId]);
-          for (const intId of interests) {
-            const actualId = typeof intId === 'object' ? (intId.interest_id || intId.interestId) : intId;
-            if (actualId) {
-              await txQuery(
-                'INSERT INTO user_interests (id, user_id, interest_id) VALUES ($1, $2, $3)',
-                [uuidv4(), userId, actualId]
-              );
-            }
+      // Update interests
+      if (Array.isArray(interests)) {
+        await deleteWhere(COLLECTIONS.USER_INTERESTS, 'user_id', '==', userId);
+        for (const intId of interests) {
+          const actualId = typeof intId === 'object' ? (intId.interest_id || intId.interestId) : intId;
+          if (actualId) {
+            const userIntId = uuidv4();
+            await setDoc(COLLECTIONS.USER_INTERESTS, userIntId, {
+              id: userIntId,
+              user_id: userId,
+              interest_id: actualId
+            });
           }
         }
+      }
 
-        // Update availability atomically inside transaction
-        if (Array.isArray(availability)) {
-          await txQuery('DELETE FROM availability WHERE user_id = $1', [userId]);
-          for (const slot of availability) {
-            const day = slot.dayOfWeek || slot.day_of_week;
-            const start = slot.startTime || slot.start_time;
-            const end = slot.endTime || slot.end_time;
-            if (day && start && end) {
-              await txQuery(
-                'INSERT INTO availability (availability_id, user_id, day_of_week, start_time, end_time) VALUES ($1, $2, $3, $4, $5)',
-                [uuidv4(), userId, day, start, end]
-              );
-            }
+      // Update availability
+      if (Array.isArray(availability)) {
+        await deleteWhere(COLLECTIONS.AVAILABILITY, 'user_id', '==', userId);
+        for (const slot of availability) {
+          const day = slot.dayOfWeek || slot.day_of_week;
+          const start = slot.startTime || slot.start_time;
+          const end = slot.endTime || slot.end_time;
+          if (day && start && end) {
+            const availId = uuidv4();
+            await setDoc(COLLECTIONS.AVAILABILITY, availId, {
+              availability_id: availId,
+              id: availId,
+              user_id: userId,
+              day_of_week: day,
+              start_time: start,
+              end_time: end
+            });
           }
         }
+      }
 
-        // Re-calculate completeness
-        const profRes = await txQuery('SELECT * FROM student_profiles WHERE user_id = $1', [userId]);
-        const skCount = (await txQuery('SELECT COUNT(*) as c FROM user_skills WHERE user_id = $1', [userId])).rows[0].c;
-        const itCount = (await txQuery('SELECT COUNT(*) as c FROM user_interests WHERE user_id = $1', [userId])).rows[0].c;
-        const avCount = (await txQuery('SELECT COUNT(*) as c FROM availability WHERE user_id = $1', [userId])).rows[0].c;
+      // Re-calculate completeness
+      const skCount = await countDocs(COLLECTIONS.USER_SKILLS, [['user_id', '==', userId]]);
+      const itCount = await countDocs(COLLECTIONS.USER_INTERESTS, [['user_id', '==', userId]]);
+      const avCount = await countDocs(COLLECTIONS.AVAILABILITY, [['user_id', '==', userId]]);
 
-        const completeness = calculateCompleteness(profRes.rows[0], parseInt(skCount, 10), parseInt(itCount, 10), parseInt(avCount, 10));
-        await txQuery('UPDATE student_profiles SET profile_completeness = $1 WHERE user_id = $2', [completeness, userId]);
+      const completeness = calculateCompleteness(profileData, skCount, itCount, avCount);
+      await updateDoc(COLLECTIONS.STUDENT_PROFILES, userId, { profile_completeness: completeness });
 
-        return { completeness };
-      });
-
-      return res.json({ message: 'Profile updated', profileCompleteness: result.completeness });
+      return res.json({ message: 'Profile updated', profileCompleteness: completeness });
     } else {
       // Mentor, Faculty, Admin Profile Update
       const cleanFullName = (fullName !== undefined && String(fullName).trim()) ? String(fullName).trim() : null;
@@ -288,31 +314,18 @@ async function updateProfile(req, res) {
       const cleanDesig = (designation !== undefined && String(designation).trim()) ? String(designation).trim() : null;
       const cleanExp = (expertise !== undefined && String(expertise).trim()) ? String(expertise).trim() : null;
 
-      await withTransaction(async (txQuery) => {
-        const staffRes = await txQuery('SELECT user_id FROM staff_profiles WHERE user_id = $1', [userId]);
-        if (staffRes.rowCount === 0) {
-          await txQuery(`
-            INSERT INTO staff_profiles (user_id, full_name, department, designation, expertise)
-            VALUES ($1, $2, $3, $4, $5)
-          `, [
-            userId,
-            cleanFullName || 'Staff Member',
-            cleanDept || 'Academic Department',
-            cleanDesig || (req.user.role === 'mentor' ? 'Academic Mentor' : req.user.role === 'faculty' ? 'Faculty Member' : 'Administrator'),
-            cleanExp || ''
-          ]);
-        } else {
-          await txQuery(`
-            UPDATE staff_profiles
-            SET full_name = COALESCE($1::varchar, full_name),
-                department = COALESCE($2::varchar, department),
-                designation = COALESCE($3::varchar, designation),
-                expertise = COALESCE($4::text, expertise)
-            WHERE user_id = $5
-          `, [cleanFullName, cleanDept, cleanDesig, cleanExp, userId]);
-        }
-      });
+      const existingStaff = await getDoc(COLLECTIONS.STAFF_PROFILES, userId);
+      const defaultDesig = req.user.role === 'mentor' ? 'Academic Mentor' : req.user.role === 'faculty' ? 'Faculty Member' : 'Administrator';
 
+      const staffData = {
+        user_id: userId,
+        full_name: cleanFullName !== null ? cleanFullName : (existingStaff?.full_name || 'Staff Member'),
+        department: cleanDept !== null ? cleanDept : (existingStaff?.department || 'Academic Department'),
+        designation: cleanDesig !== null ? cleanDesig : (existingStaff?.designation || defaultDesig),
+        expertise: cleanExp !== null ? cleanExp : (existingStaff?.expertise || '')
+      };
+
+      await setDoc(COLLECTIONS.STAFF_PROFILES, userId, staffData);
       return res.json({ message: 'Profile updated' });
     }
   } catch (err) {
@@ -332,28 +345,40 @@ async function suggestSkill(req, res) {
     const trimmedName = name.trim();
     const trimmedCat = category.trim();
 
-    // Check if skill already exists in skills table
+    const allSkills = await getAllDocs(COLLECTIONS.SKILLS);
+    const existing = allSkills.find(s => s.name && s.name.toLowerCase() === trimmedName.toLowerCase());
+
     let skillId;
-    const existing = await query('SELECT skill_id, approved FROM skills WHERE LOWER(name) = LOWER(?)', [trimmedName]);
-    if (existing.rowCount > 0) {
-      skillId = existing.rows[0].skill_id;
+    if (existing) {
+      skillId = existing.skill_id || existing.id;
     } else {
       skillId = `sk-${uuidv4().slice(0, 8)}`;
-      await query('INSERT INTO skills (skill_id, name, category, approved, suggested_by) VALUES (?, ?, ?, 0, ?)', [
-        skillId,
-        trimmedName,
-        trimmedCat,
-        req.user.userId
-      ]);
+      await setDoc(COLLECTIONS.SKILLS, skillId, {
+        skill_id: skillId,
+        id: skillId,
+        name: trimmedName,
+        category: trimmedCat,
+        approved: 0,
+        suggested_by: req.user.userId,
+        created_at: nowISO()
+      });
     }
 
-    // Immediately associate with student in user_skills as well so it stays on profile
-    const existingUserSkill = await query('SELECT id FROM user_skills WHERE user_id = ? AND skill_id = ?', [req.user.userId, skillId]);
-    if (existingUserSkill.rowCount === 0) {
-      await query(
-        'INSERT INTO user_skills (id, user_id, skill_id, type, level) VALUES (?, ?, ?, ?, ?)',
-        [uuidv4(), req.user.userId, skillId, type, 'beginner']
-      );
+    // Immediately associate with student in user_skills
+    const userSkills = await queryDocs(COLLECTIONS.USER_SKILLS, [
+      ['user_id', '==', req.user.userId],
+      ['skill_id', '==', skillId]
+    ]);
+
+    if (userSkills.length === 0) {
+      const userSkillId = uuidv4();
+      await setDoc(COLLECTIONS.USER_SKILLS, userSkillId, {
+        id: userSkillId,
+        user_id: req.user.userId,
+        skill_id: skillId,
+        type,
+        level: 'beginner'
+      });
     }
 
     return res.status(201).json({

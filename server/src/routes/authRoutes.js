@@ -23,6 +23,9 @@ const resetLimiter = rateLimit({
 
 router.post('/register', authLimiter, authController.register);
 router.post('/login', authLimiter, authController.login);
+router.post('/sync-profile', authLimiter, authController.syncProfile);
+router.post('/firebase-login', authLimiter, authController.firebaseLogin);
+router.post('/complete-profile', authLimiter, authController.completeProfile);
 router.post('/forgot-password', resetLimiter, authController.forgotPassword);
 router.post('/reset-password', resetLimiter, authController.resetPassword);
 router.post('/verify-email', authLimiter, authController.verifyEmail);

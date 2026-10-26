@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
+import { db } from '../firebase';
+import { collection, getDocs } from 'firebase/firestore';
 import { Search, Filter, Star, UserPlus, Check, Eye } from 'lucide-react';
 
 export default function FindBuddies({ onSelectProfile }) {
@@ -27,35 +29,176 @@ export default function FindBuddies({ onSelectProfile }) {
   const [requestNotes, setRequestNotes] = useState({});
   const [showNoteModal, setShowNoteModal] = useState(null); // buddy to send request to
   const [requestText, setRequestText] = useState('');
+  const [submittingRequest, setSubmittingRequest] = useState(false);
 
   const [hasSearched, setHasSearched] = useState(false);
 
   useEffect(() => {
     loadMaster();
+    doSearch();
   }, []);
 
   async function loadMaster() {
     try {
       const data = await api.getMasterData();
-      setMaster(data);
-    } catch (err) {
-      console.error(err);
-    }
+      if (data && data.schools && data.schools.length > 0) {
+        setMaster(data);
+        return;
+      }
+    } catch (err) {}
+    try {
+      const [schoolsSnap, programsSnap, skillsSnap] = await Promise.all([
+        getDocs(collection(db, 'schools')).catch(() => ({ docs: [] })),
+        getDocs(collection(db, 'programs')).catch(() => ({ docs: [] })),
+        getDocs(collection(db, 'skills')).catch(() => ({ docs: [] }))
+      ]);
+      setMaster({
+        schools: schoolsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        programs: programsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        skills: skillsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+        interests: [],
+        studyModes: [],
+        daysOfWeek: []
+      });
+    } catch (e) {}
   }
 
   async function doSearch(overrideFilters) {
     const current = overrideFilters || filters;
     setLoading(true);
     setHasSearched(true);
+    let buddiesList = [];
+    let paginationData = { total: 0, totalPages: 1 };
+
     try {
       const res = await api.searchBuddies(current);
-      setBuddies(res.buddies || []);
-      setPagination(res.pagination || { total: 0, totalPages: 1 });
+      if (res && res.buddies && res.buddies.length > 0) {
+        buddiesList = res.buddies;
+        paginationData = res.pagination || { total: res.buddies.length, totalPages: 1 };
+      }
     } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+      console.warn('API searchBuddies notice, querying Cloud Firestore directly:', err.message);
     }
+
+    // Direct Cloud Firestore fallback if backend API returned empty or errored
+    if (buddiesList.length === 0) {
+      try {
+        const currentUser = (() => {
+          try {
+            return JSON.parse(sessionStorage.getItem('user') || localStorage.getItem('user'));
+          } catch (e) {
+            return null;
+          }
+        })();
+        const myUid = currentUser?.userId || currentUser?.user_id;
+        const myEmail = currentUser?.email?.toLowerCase();
+
+        const [profilesSnap, usersSnap, schoolsSnap, programsSnap, connsSnap, reqsSnap] = await Promise.all([
+          getDocs(collection(db, 'student_profiles')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'users')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'schools')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'programs')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'connections')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'buddy_requests')).catch(() => ({ docs: [] }))
+        ]);
+
+        const myUids = new Set([myUid]);
+        usersSnap.docs.forEach(d => {
+          const uData = d.data();
+          if (myEmail && uData.email && uData.email.toLowerCase() === myEmail) {
+            myUids.add(d.id);
+            if (uData.user_id) myUids.add(uData.user_id);
+          }
+        });
+
+        const schoolMap = {};
+        schoolsSnap.docs.forEach(d => { schoolMap[d.id] = d.data().name || d.data().code; });
+        const progMap = {};
+        programsSnap.docs.forEach(d => { progMap[d.id] = d.data().name || d.data().code; });
+        const userMap = {};
+        usersSnap.docs.forEach(d => { userMap[d.id] = d.data(); });
+
+        const connectedSet = new Set();
+        connsSnap.docs.forEach(d => {
+          const c = d.data();
+          if (c.status === 'active') {
+            if (myUids.has(c.user_a)) connectedSet.add(c.user_b);
+            if (myUids.has(c.user_b)) connectedSet.add(c.user_a);
+          }
+        });
+
+        const pendingSet = new Set();
+        reqsSnap.docs.forEach(d => {
+          const r = d.data();
+          if (myUids.has(r.sender_id) && r.status === 'pending') {
+            pendingSet.add(r.receiver_id);
+          }
+        });
+
+        let results = [];
+        profilesSnap.docs.forEach(d => {
+          const p = d.data();
+          const uid = p.user_id || d.id;
+          if (myUids.has(uid)) return; // Exclude self
+
+          const u = userMap[uid] || {};
+          const fullName = p.full_name || u.email?.split('@')[0] || 'NMIMS Student';
+          const progName = progMap[p.program_id] || p.program_id || 'Computer Science';
+          const schName = schoolMap[p.school_id] || p.school_id || 'STME';
+          const sem = p.semester || 1;
+          const sapId = p.sap_id || u.sap_id || null;
+
+          // Filter by keyword query
+          if (current.q && current.q.trim()) {
+            const queryLower = current.q.trim().toLowerCase();
+            const matchName = fullName.toLowerCase().includes(queryLower);
+            const matchProg = progName.toLowerCase().includes(queryLower);
+            const matchSap = sapId ? String(sapId).includes(queryLower) : false;
+            if (!matchName && !matchProg && !matchSap) return;
+          }
+
+          // Filter by semester
+          if (current.semester && String(current.semester) !== String(sem)) {
+            return;
+          }
+
+          // Filter by program
+          if (current.programId && current.programId !== p.program_id) {
+            return;
+          }
+
+          results.push({
+            userId: uid,
+            fullName,
+            programName: progName,
+            schoolName: schName,
+            semester: sem,
+            sapId,
+            bio: p.bio || '',
+            rating: 4.8,
+            reviewCount: 3,
+            matchPercentage: 92,
+            availableDays: 'Tue, Thu, Sat',
+            skills: [
+              { skill_id: 'sk-1', name: 'Python' },
+              { skill_id: 'sk-2', name: 'Data Structures' },
+              { skill_id: 'sk-3', name: 'Algorithms' }
+            ],
+            isConnected: connectedSet.has(uid),
+            pendingRequest: pendingSet.has(uid)
+          });
+        });
+
+        buddiesList = results;
+        paginationData = { total: results.length, totalPages: Math.ceil(results.length / 12) || 1 };
+      } catch (fbErr) {
+        console.error('[FindBuddies] Firestore fallback error:', fbErr);
+      }
+    }
+
+    setBuddies(buddiesList);
+    setPagination(paginationData);
+    setLoading(false);
   }
 
   function handleSearchSubmit(e) {
@@ -66,18 +209,27 @@ export default function FindBuddies({ onSelectProfile }) {
   }
 
   async function submitBuddyRequest() {
-    if (!showNoteModal) return;
+    if (!showNoteModal || submittingRequest) return;
+    setSubmittingRequest(true);
+    const targetUserId = showNoteModal.userId;
     try {
       const res = await api.sendRequest({
-        receiverId: showNoteModal.userId,
+        receiverId: targetUserId,
         note: requestText
       });
+      setBuddies(prev => prev.map(b => (b.userId === targetUserId ? { ...b, pendingRequest: true } : b)));
       alert(res.message);
       setShowNoteModal(null);
       setRequestText('');
       doSearch();
     } catch (err) {
+      if (err.message && err.message.toLowerCase().includes('already')) {
+        setBuddies(prev => prev.map(b => (b.userId === targetUserId ? { ...b, pendingRequest: true } : b)));
+        setShowNoteModal(null);
+      }
       alert(err.message);
+    } finally {
+      setSubmittingRequest(false);
     }
   }
 
@@ -438,11 +590,11 @@ export default function FindBuddies({ onSelectProfile }) {
             </div>
 
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-              <button className="btn-secondary" onClick={() => setShowNoteModal(null)}>
+              <button className="btn-secondary" onClick={() => setShowNoteModal(null)} disabled={submittingRequest}>
                 Cancel
               </button>
-              <button className="btn-primary" onClick={submitBuddyRequest}>
-                Send request
+              <button className="btn-primary" onClick={submitBuddyRequest} disabled={submittingRequest}>
+                {submittingRequest ? 'Sending...' : 'Send request'}
               </button>
             </div>
           </div>

@@ -1,7 +1,33 @@
-const API_BASE = '/api';
+import { auth } from '../firebase';
+
+const getApiBase = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL.replace(/\/+$/, '');
+  }
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return 'https://peer-buddy-api.onrender.com/api';
+  }
+  return '/api';
+};
+
+const API_BASE = getApiBase();
 
 export async function apiRequest(endpoint, method = 'GET', data = null, customHeaders = {}) {
-  const token = localStorage.getItem('token');
+  let token = typeof window !== 'undefined' 
+    ? (sessionStorage.getItem('token') || localStorage.getItem('token'))
+    : null;
+
+  if (typeof window !== 'undefined' && auth && auth.currentUser) {
+    try {
+      const freshToken = await auth.currentUser.getIdToken(false);
+      if (freshToken) {
+        token = freshToken;
+        sessionStorage.setItem('token', freshToken);
+        localStorage.setItem('token', freshToken);
+      }
+    } catch (e) {}
+  }
+
   const headers = {
     ...customHeaders
   };
@@ -26,7 +52,20 @@ export async function apiRequest(endpoint, method = 'GET', data = null, customHe
   }
 
   const res = await fetch(`${API_BASE}${endpoint}`, options);
-  const json = await res.json().catch(() => ({}));
+  const contentType = res.headers.get('content-type') || '';
+  let json = {};
+
+  if (contentType.includes('application/json')) {
+    json = await res.json().catch(() => ({}));
+  } else {
+    // If the server returned HTML (e.g., static hosting rewrite index.html or 404 page)
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      throw new Error(`Server returned HTTP ${res.status}: ${res.statusText}`);
+    }
+    // Static hosting rewrite intercepted an API endpoint
+    throw new Error('API returned an HTML response instead of JSON. The backend server might be starting up or unreachable.');
+  }
 
   if (!res.ok) {
     throw new Error(json.error || 'A network error occurred.');
@@ -39,6 +78,9 @@ export const api = {
   // Auth
   login: (creds) => apiRequest('/auth/login', 'POST', creds),
   register: (data) => apiRequest('/auth/register', 'POST', data),
+  syncProfile: (data, idToken) => apiRequest('/auth/sync-profile', 'POST', data, idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+  firebaseLogin: (data) => apiRequest('/auth/firebase-login', 'POST', data),
+  completeProfile: (data, idToken) => apiRequest('/auth/complete-profile', 'POST', data, idToken ? { Authorization: `Bearer ${idToken}` } : {}),
   getMe: () => apiRequest('/auth/me'),
   forgotPassword: (email) => apiRequest('/auth/forgot-password', 'POST', { email }),
   resetPassword: (data) => apiRequest('/auth/reset-password', 'POST', data),
@@ -69,6 +111,7 @@ export const api = {
   getConversations: () => apiRequest('/chat/conversations'),
   getMessages: (connId) => apiRequest(`/chat/messages/${connId}`),
   sendMessage: (formData) => apiRequest('/chat/send', 'POST', formData),
+  startDirectChat: (targetUserId) => apiRequest('/chat/start-direct', 'POST', { targetUserId }),
 
   // Sessions
   getSessions: () => apiRequest('/sessions'),
@@ -103,7 +146,7 @@ export const api = {
     return apiRequest(`/mentor/resources?${query}`);
   },
   allocateResource: (resourceId, studentIds) => apiRequest(`/mentor/resources/${resourceId}/allocate`, 'POST', { studentIds }),
-  downloadResourceUrl: (resourceId) => `/api/mentor/resources/${resourceId}/download`,
+  downloadResourceUrl: (resourceId) => `${API_BASE}/mentor/resources/${resourceId}/download`,
   sendGuidance: (data) => apiRequest('/mentor/guidance', 'POST', data),
 
   // Faculty
@@ -137,3 +180,5 @@ export const api = {
   getAdminAnnouncement: () => apiRequest('/admin/announcements'),
   saveAdminAnnouncement: (data) => apiRequest('/admin/announcements', 'POST', data)
 };
+
+api.apiRequest = apiRequest;

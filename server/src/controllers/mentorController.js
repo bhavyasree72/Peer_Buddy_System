@@ -1,75 +1,86 @@
 const { v4: uuidv4 } = require('uuid');
-const { query } = require('../database/db');
+const path = require('path');
+const fs = require('fs');
+const {
+  COLLECTIONS,
+  getDoc,
+  setDoc,
+  updateDoc,
+  queryDocs,
+  getAllDocs,
+  nowISO
+} = require('../database/firestoreDb');
 
 // GET /api/mentor/dashboard
-// Summary tiles + short recent activity list
 async function getMentorDashboard(req, res) {
   try {
     const mentorId = req.user.userId;
 
     // Requests awaiting review count
-    const pendingCountRes = await query(`
-      SELECT COUNT(*) as c FROM buddy_requests WHERE status = 'pending' AND needs_mentor_review = 1
-    `);
-    const requestsToReview = pendingCountRes.rows[0].c || 0;
+    const pendingReqs = await queryDocs(COLLECTIONS.BUDDY_REQUESTS, [
+      ['status', '==', 'pending']
+    ]);
+    const requestsToReview = pendingReqs.filter(r => r.needs_mentor_review === 1 || r.needs_mentor_review === true).length;
 
-    // Allocated students count for this specific mentor
-    const studentsCountRes = await query(`
-      SELECT COUNT(*) as c FROM users u
-      JOIN student_profiles sp ON u.user_id = sp.user_id
-      WHERE u.role = 'student' AND u.status = 'active'
-        AND (sp.mentor_id = ? OR EXISTS (
-          SELECT 1 FROM connections c 
-          WHERE ((c.user_a = ? AND c.user_b = u.user_id) OR (c.user_b = ? AND c.user_a = u.user_id)) 
-            AND c.status = 'active'
-        ))
-    `, [mentorId, mentorId, mentorId]);
-    const studentsCount = studentsCountRes.rows[0].c || 0;
+    // Active connections for this mentor
+    const connsA = await queryDocs(COLLECTIONS.CONNECTIONS, [['user_a', '==', mentorId], ['status', '==', 'active']]);
+    const connsB = await queryDocs(COLLECTIONS.CONNECTIONS, [['user_b', '==', mentorId], ['status', '==', 'active']]);
+    const mentorConnBuddyIds = new Set([...connsA.map(c => c.user_b), ...connsB.map(c => c.user_a)]);
+
+    // Allocated students count
+    const allStudents = await queryDocs(COLLECTIONS.USERS, [
+      ['role', '==', 'student'],
+      ['status', '==', 'active']
+    ]);
+
+    let studentsCount = 0;
+    for (const u of allStudents) {
+      const sp = await getDoc(COLLECTIONS.STUDENT_PROFILES, u.user_id);
+      if (sp && (sp.mentor_id === mentorId || mentorConnBuddyIds.has(u.user_id))) {
+        studentsCount++;
+      }
+    }
 
     // Resources shared by this mentor
-    const resourcesRes = await query(`
-      SELECT COUNT(*) as c FROM resources WHERE mentor_id = ?
-    `, [mentorId]);
-    const resourcesShared = resourcesRes.rows[0].c || 0;
+    const myResources = await queryDocs(COLLECTIONS.RESOURCES, [['mentor_id', '==', mentorId]]);
+    const resourcesShared = myResources.length;
 
-    // Recent activity list (recent reviews made by this mentor + recent guidance messages)
+    // Recent activity list
     const recentActivity = [];
-    
-    const recentReviews = (await query(`
-      SELECT mr.*, br.sender_id, br.receiver_id,
-             sp1.full_name as sender_name, sp2.full_name as receiver_name
-      FROM mentor_reviews mr
-      JOIN buddy_requests br ON mr.request_id = br.request_id
-      LEFT JOIN student_profiles sp1 ON br.sender_id = sp1.user_id
-      LEFT JOIN student_profiles sp2 ON br.receiver_id = sp2.user_id
-      WHERE mr.mentor_id = ?
-      ORDER BY mr.reviewed_at DESC
-      LIMIT 5
-    `, [mentorId])).rows;
+    const reviews = await queryDocs(COLLECTIONS.MENTOR_REVIEWS, [['mentor_id', '==', mentorId]]);
+    reviews.sort((a, b) => new Date(b.reviewed_at || 0) - new Date(a.reviewed_at || 0));
 
-    recentReviews.forEach(r => {
+    for (const r of reviews.slice(0, 5)) {
+      const br = r.request_id ? await getDoc(COLLECTIONS.BUDDY_REQUESTS, r.request_id) : null;
+      let sName = 'Student A';
+      let rName = 'Student B';
+      if (br) {
+        const sp1 = await getDoc(COLLECTIONS.STUDENT_PROFILES, br.sender_id);
+        const sp2 = await getDoc(COLLECTIONS.STUDENT_PROFILES, br.receiver_id);
+        if (sp1) sName = sp1.full_name;
+        if (sp2) rName = sp2.full_name;
+      }
       recentActivity.push({
-        id: r.review_id,
+        id: r.review_id || r.id,
         type: 'review',
-        text: `Reviewed request between ${r.sender_name} and ${r.receiver_name} (${r.decision})`,
+        text: `Reviewed request between ${sName} and ${rName} (${r.decision})`,
         time: r.reviewed_at
       });
-    });
+    }
 
-    const recentGuidance = (await query(`
-      SELECT * FROM guidance_messages WHERE mentor_id = ? ORDER BY created_at DESC LIMIT 5
-    `, [mentorId])).rows;
+    const guidance = await queryDocs(COLLECTIONS.GUIDANCE_MESSAGES, [['mentor_id', '==', mentorId]]);
+    guidance.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
 
-    recentGuidance.forEach(g => {
+    for (const g of guidance.slice(0, 5)) {
       recentActivity.push({
-        id: g.guidance_id,
+        id: g.guidance_id || g.id,
         type: 'guidance',
         text: `Sent guidance message: "${g.subject}"`,
         time: g.created_at
       });
-    });
+    }
 
-    recentActivity.sort((a, b) => new Date(b.time) - new Date(a.time));
+    recentActivity.sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0));
 
     return res.json({
       summary: {
@@ -86,49 +97,70 @@ async function getMentorDashboard(req, res) {
 }
 
 // GET /api/mentor/review-requests
-// Full queue of flagged buddy requests with details and Reviewed history tab
 async function getReviewRequests(req, res) {
   try {
     const mentorId = req.user.userId;
 
-    const pendingRows = (await query(`
-      SELECT br.*, 
-             COALESCE(br.flag_reason, 'Cross-year / academic gap') as flag_reason,
-             s_prof.full_name as sender_name, s_prof.semester as sender_semester, s_prof.year as sender_year,
-             s_prog.name as sender_program, s_sch.name as sender_school,
-             r_prof.full_name as receiver_name, r_prof.semester as receiver_semester, r_prof.year as receiver_year,
-             r_prog.name as receiver_program, r_sch.name as receiver_school
-      FROM buddy_requests br
-      JOIN student_profiles s_prof ON br.sender_id = s_prof.user_id
-      LEFT JOIN programs s_prog ON s_prof.program_id = s_prog.id
-      LEFT JOIN schools s_sch ON s_prof.school_id = s_sch.id
-      JOIN student_profiles r_prof ON br.receiver_id = r_prof.user_id
-      LEFT JOIN programs r_prog ON r_prof.program_id = r_prog.id
-      LEFT JOIN schools r_sch ON r_prof.school_id = r_sch.id
-      WHERE br.status = 'pending' AND br.needs_mentor_review = 1
-      ORDER BY br.created_at ASC
-    `)).rows;
+    const programs = await getAllDocs(COLLECTIONS.PROGRAMS);
+    const progMap = new Map(programs.map(p => [p.id, p.name]));
+    const schools = await getAllDocs(COLLECTIONS.SCHOOLS);
+    const schoolMap = new Map(schools.map(s => [s.id, s.name]));
 
-    const reviewedRows = (await query(`
-      SELECT mr.*, br.note,
-             COALESCE(br.flag_reason, 'Cross-year / academic gap') as flag_reason,
-             s_prof.full_name as sender_name, s_prof.semester as sender_semester, s_prof.year as sender_year,
-             s_prog.name as sender_program,
-             r_prof.full_name as receiver_name, r_prof.semester as receiver_semester, r_prof.year as receiver_year,
-             r_prog.name as receiver_program
-      FROM mentor_reviews mr
-      JOIN buddy_requests br ON mr.request_id = br.request_id
-      JOIN student_profiles s_prof ON br.sender_id = s_prof.user_id
-      LEFT JOIN programs s_prog ON s_prof.program_id = s_prog.id
-      JOIN student_profiles r_prof ON br.receiver_id = r_prof.user_id
-      LEFT JOIN programs r_prog ON r_prof.program_id = r_prog.id
-      WHERE mr.mentor_id = ?
-      ORDER BY mr.reviewed_at DESC
-    `, [mentorId])).rows;
+    const allReqs = await queryDocs(COLLECTIONS.BUDDY_REQUESTS, [
+      ['status', '==', 'pending']
+    ]);
+    const flagged = allReqs.filter(r => r.needs_mentor_review === 1 || r.needs_mentor_review === true);
+
+    const pending = [];
+    for (const br of flagged) {
+      const sProf = await getDoc(COLLECTIONS.STUDENT_PROFILES, br.sender_id);
+      const rProf = await getDoc(COLLECTIONS.STUDENT_PROFILES, br.receiver_id);
+      pending.push({
+        ...br,
+        flag_reason: br.flag_reason || 'Cross-year / academic gap',
+        sender_name: sProf ? sProf.full_name : 'Student',
+        sender_semester: sProf ? sProf.semester : null,
+        sender_year: sProf ? sProf.year : null,
+        sender_program: sProf && sProf.program_id ? (progMap.get(sProf.program_id) || null) : null,
+        sender_school: sProf && sProf.school_id ? (schoolMap.get(sProf.school_id) || null) : null,
+        receiver_name: rProf ? rProf.full_name : 'Student',
+        receiver_semester: rProf ? rProf.semester : null,
+        receiver_year: rProf ? rProf.year : null,
+        receiver_program: rProf && rProf.program_id ? (progMap.get(rProf.program_id) || null) : null,
+        receiver_school: rProf && rProf.school_id ? (schoolMap.get(rProf.school_id) || null) : null
+      });
+    }
+    pending.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+
+    const myReviews = await queryDocs(COLLECTIONS.MENTOR_REVIEWS, [['mentor_id', '==', mentorId]]);
+    const reviewed = [];
+    for (const mr of myReviews) {
+      const br = mr.request_id ? await getDoc(COLLECTIONS.BUDDY_REQUESTS, mr.request_id) : null;
+      let sProf = null;
+      let rProf = null;
+      if (br) {
+        sProf = await getDoc(COLLECTIONS.STUDENT_PROFILES, br.sender_id);
+        rProf = await getDoc(COLLECTIONS.STUDENT_PROFILES, br.receiver_id);
+      }
+      reviewed.push({
+        ...mr,
+        note: br ? br.note : null,
+        flag_reason: (br && br.flag_reason) || 'Cross-year / academic gap',
+        sender_name: sProf ? sProf.full_name : 'Student',
+        sender_semester: sProf ? sProf.semester : null,
+        sender_year: sProf ? sProf.year : null,
+        sender_program: sProf && sProf.program_id ? (progMap.get(sProf.program_id) || null) : null,
+        receiver_name: rProf ? rProf.full_name : 'Student',
+        receiver_semester: rProf ? rProf.semester : null,
+        receiver_year: rProf ? rProf.year : null,
+        receiver_program: rProf && rProf.program_id ? (progMap.get(rProf.program_id) || null) : null
+      });
+    }
+    reviewed.sort((a, b) => new Date(b.reviewed_at || 0) - new Date(a.reviewed_at || 0));
 
     return res.json({
-      pending: pendingRows,
-      reviewed: reviewedRows
+      pending,
+      reviewed
     });
   } catch (err) {
     console.error('getReviewRequests error:', err);
@@ -137,45 +169,68 @@ async function getReviewRequests(req, res) {
 }
 
 // GET /api/mentor/my-students
-// Strictly returns students allocated to the currently authenticated mentor
 async function getMyStudents(req, res) {
   try {
     const mentorId = req.user.userId;
     const { q, schoolId, semester } = req.query;
 
-    let sql = `
-      SELECT u.user_id, u.email, sp.full_name, sp.semester, sp.year, sp.bio, sp.school_id, sp.mentor_id,
-             p.name as program_name, s.name as school_name, s.code as school_code,
-             (SELECT COUNT(*) FROM connections WHERE (user_a = u.user_id OR user_b = u.user_id) AND status = 'active') as active_buddies_count
-      FROM users u
-      JOIN student_profiles sp ON u.user_id = sp.user_id
-      LEFT JOIN programs p ON sp.program_id = p.id
-      LEFT JOIN schools s ON sp.school_id = s.id
-      WHERE u.role = 'student' AND u.status = 'active'
-        AND (sp.mentor_id = ? OR EXISTS (
-          SELECT 1 FROM connections c 
-          WHERE ((c.user_a = ? AND c.user_b = u.user_id) OR (c.user_b = ? AND c.user_a = u.user_id)) 
-            AND c.status = 'active'
-        ))
-    `;
-    const params = [mentorId, mentorId, mentorId];
+    const programs = await getAllDocs(COLLECTIONS.PROGRAMS);
+    const progMap = new Map(programs.map(p => [p.id, p]));
+    const schools = await getAllDocs(COLLECTIONS.SCHOOLS);
+    const schoolMap = new Map(schools.map(s => [s.id, s]));
 
-    if (schoolId) {
-      sql += ' AND sp.school_id = ?';
-      params.push(schoolId);
-    }
-    if (semester) {
-      sql += ' AND sp.semester = ?';
-      params.push(parseInt(semester, 10));
-    }
-    if (q) {
-      sql += ' AND (LOWER(sp.full_name) LIKE ? OR LOWER(u.email) LIKE ? OR LOWER(p.name) LIKE ?)';
-      params.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
+    const connsA = await queryDocs(COLLECTIONS.CONNECTIONS, [['user_a', '==', mentorId], ['status', '==', 'active']]);
+    const connsB = await queryDocs(COLLECTIONS.CONNECTIONS, [['user_b', '==', mentorId], ['status', '==', 'active']]);
+    const mentorConnBuddyIds = new Set([...connsA.map(c => c.user_b), ...connsB.map(c => c.user_a)]);
+
+    const studentUsers = await queryDocs(COLLECTIONS.USERS, [
+      ['role', '==', 'student'],
+      ['status', '==', 'active']
+    ]);
+
+    const allActiveConns = await queryDocs(COLLECTIONS.CONNECTIONS, [['status', '==', 'active']]);
+
+    const students = [];
+    for (const u of studentUsers) {
+      const sp = await getDoc(COLLECTIONS.STUDENT_PROFILES, u.user_id);
+      if (!sp) continue;
+
+      const isAllocated = sp.mentor_id === mentorId || mentorConnBuddyIds.has(u.user_id);
+      if (!isAllocated) continue;
+
+      if (schoolId && sp.school_id !== schoolId) continue;
+      if (semester && Number(sp.semester) !== parseInt(semester, 10)) continue;
+
+      const prog = sp.program_id ? progMap.get(sp.program_id) : null;
+      const sch = sp.school_id ? schoolMap.get(sp.school_id) : null;
+
+      if (q) {
+        const qLower = q.toLowerCase();
+        const nMatch = sp.full_name && sp.full_name.toLowerCase().includes(qLower);
+        const eMatch = u.email && u.email.toLowerCase().includes(qLower);
+        const pMatch = prog && prog.name && prog.name.toLowerCase().includes(qLower);
+        if (!nMatch && !eMatch && !pMatch) continue;
+      }
+
+      const activeBuddies = allActiveConns.filter(c => c.user_a === u.user_id || c.user_b === u.user_id).length;
+
+      students.push({
+        user_id: u.user_id,
+        email: u.email,
+        full_name: sp.full_name,
+        semester: sp.semester,
+        year: sp.year,
+        bio: sp.bio,
+        school_id: sp.school_id,
+        mentor_id: sp.mentor_id,
+        program_name: prog ? prog.name : null,
+        school_name: sch ? sch.name : null,
+        school_code: sch ? sch.code : null,
+        active_buddies_count: activeBuddies
+      });
     }
 
-    sql += ' ORDER BY sp.full_name ASC';
-
-    const students = (await query(sql, params)).rows;
+    students.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
     return res.json({ students });
   } catch (err) {
     console.error('getMyStudents error:', err);
@@ -184,22 +239,26 @@ async function getMyStudents(req, res) {
 }
 
 // GET /api/mentor/messages
-// Guidance messages sent by this mentor
 async function getMentorMessages(req, res) {
   try {
     const mentorId = req.user.userId;
-    const messages = (await query(`
-      SELECT gm.*,
-             CASE 
-               WHEN gm.target_type = 'student' THEN (SELECT full_name FROM student_profiles WHERE user_id = gm.target_id)
-               ELSE NULL 
-             END as recipient_name
-      FROM guidance_messages gm
-      WHERE gm.mentor_id = ?
-      ORDER BY gm.created_at DESC
-    `, [mentorId])).rows;
+    const messages = await queryDocs(COLLECTIONS.GUIDANCE_MESSAGES, [['mentor_id', '==', mentorId]]);
+    messages.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
 
-    return res.json({ messages });
+    const enriched = [];
+    for (const gm of messages) {
+      let recipientName = null;
+      if (gm.target_type === 'student' && gm.target_id) {
+        const sp = await getDoc(COLLECTIONS.STUDENT_PROFILES, gm.target_id);
+        recipientName = sp ? sp.full_name : null;
+      }
+      enriched.push({
+        ...gm,
+        recipient_name: recipientName
+      });
+    }
+
+    return res.json({ messages: enriched });
   } catch (err) {
     console.error('getMentorMessages error:', err);
     return res.status(500).json({ error: 'Failed to load guidance messages.' });
@@ -211,29 +270,36 @@ async function reviewBuddyRequest(req, res) {
   try {
     const mentorId = req.user.userId;
     const { requestId } = req.params;
-    const { decision, remarks } = req.body; // 'approved' or 'rejected'
+    const { decision, remarks } = req.body;
 
     if (!['approved', 'rejected'].includes(decision)) {
       return res.status(400).json({ error: 'Decision must be approved or rejected.' });
     }
 
-    const reqRes = await query('SELECT * FROM buddy_requests WHERE request_id = ?', [requestId]);
-    if (reqRes.rowCount === 0) {
+    const request = await getDoc(COLLECTIONS.BUDDY_REQUESTS, requestId);
+    if (!request) {
       return res.status(404).json({ error: 'Buddy request not found.' });
     }
 
     const reviewId = uuidv4();
-    await query(`
-      INSERT INTO mentor_reviews (review_id, request_id, mentor_id, decision, remarks)
-      VALUES (?, ?, ?, ?, ?)
-    `, [reviewId, requestId, mentorId, decision, remarks ? remarks.trim() : null]);
+    const now = nowISO();
+
+    await setDoc(COLLECTIONS.MENTOR_REVIEWS, reviewId, {
+      review_id: reviewId,
+      request_id: requestId,
+      mentor_id: mentorId,
+      decision,
+      remarks: remarks ? remarks.trim() : null,
+      reviewed_at: now
+    });
 
     if (decision === 'approved') {
-      // Unflag the request so receiver sees it normally
-      await query('UPDATE buddy_requests SET needs_mentor_review = 0 WHERE request_id = ?', [requestId]);
+      await updateDoc(COLLECTIONS.BUDDY_REQUESTS, requestId, { needs_mentor_review: 0 });
     } else {
-      // Reject request directly
-      await query(`UPDATE buddy_requests SET status = 'declined', responded_at = datetime('now') WHERE request_id = ?`, [requestId]);
+      await updateDoc(COLLECTIONS.BUDDY_REQUESTS, requestId, {
+        status: 'declined',
+        responded_at: now
+      });
     }
 
     return res.json({ message: `Request has been ${decision}.` });
@@ -257,27 +323,19 @@ async function uploadResource(req, res) {
     if (req.file) {
       const ext = path.extname(req.file.originalname).toLowerCase();
       const storageKey = `resources/${uuidv4()}${ext}`;
-      const { supabase } = require('../utils/supabase');
 
-      if (supabase && supabase.storage) {
-        const { error: uploadError } = await supabase.storage
-          .from('peer-buddy-resources')
-          .upload(storageKey, req.file.buffer, {
-            contentType: req.file.mimetype,
-            upsert: true
-          });
-
-        if (uploadError) {
-          console.error('Supabase resource upload error:', uploadError);
-          return res.status(500).json({ error: 'Failed to upload resource to cloud storage.' });
-        }
-
-        const { data: publicData } = supabase.storage
-          .from('peer-buddy-resources')
-          .getPublicUrl(storageKey);
-
-        fileUrlOrLink = publicData.publicUrl;
-      } else {
+      // Upload to Firebase Storage
+      try {
+        const { getStorage } = require('../utils/firebaseAdmin');
+        const bucket = getStorage().bucket();
+        const file = bucket.file(storageKey);
+        await file.save(req.file.buffer, {
+          metadata: { contentType: req.file.mimetype },
+          public: true
+        });
+        fileUrlOrLink = `https://storage.googleapis.com/${bucket.name}/${storageKey}`;
+      } catch (storageErr) {
+        console.error('[Firebase Storage] Resource upload error, fallback to local:', storageErr.message);
         fileUrlOrLink = `/uploads/${uuidv4()}${ext}`;
       }
     }
@@ -287,10 +345,16 @@ async function uploadResource(req, res) {
     }
 
     const resourceId = uuidv4();
-    await query(`
-      INSERT INTO resources (resource_id, mentor_id, title, subject, semester, file_url_or_link, description)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [resourceId, mentorId, title.trim(), subject.trim(), semester || 1, fileUrlOrLink, description ? description.trim() : null]);
+    await setDoc(COLLECTIONS.RESOURCES, resourceId, {
+      resource_id: resourceId,
+      mentor_id: mentorId,
+      title: title.trim(),
+      subject: subject.trim(),
+      semester: Number(semester) || 1,
+      file_url_or_link: fileUrlOrLink,
+      description: description ? description.trim() : null,
+      uploaded_at: nowISO()
+    });
 
     return res.status(201).json({
       message: 'Resource uploaded successfully.',
@@ -304,50 +368,51 @@ async function uploadResource(req, res) {
 }
 
 // GET /api/mentor/resources
-// - Students: ONLY receive resources explicitly allocated/assigned to them via resource_allocations
-// - Staff (Mentor, Faculty, Admin): receive resources uploaded by themselves or available in the catalog
 async function getResources(req, res) {
   try {
     const userRole = req.user.role;
     const userId = req.user.userId;
     const { subject, semester, q } = req.query;
 
-    let sql = `
-      SELECT r.*, COALESCE(sp.full_name, stp.full_name, 'Academic Mentor') as uploader_name
-      FROM resources r
-      LEFT JOIN student_profiles sp ON r.mentor_id = sp.user_id
-      LEFT JOIN staff_profiles stp ON r.mentor_id = stp.user_id
-    `;
-    const params = [];
+    let resources = await getAllDocs(COLLECTIONS.RESOURCES);
 
     if (userRole === 'student') {
-      // Must be explicitly allocated to this student
-      sql += `
-        INNER JOIN resource_allocations ra ON r.resource_id = ra.resource_id
-        WHERE ra.student_id = ?
-      `;
-      params.push(userId);
-    } else {
-      sql += ` WHERE 1=1`;
+      const allocations = await queryDocs(COLLECTIONS.RESOURCE_ALLOCATIONS, [['student_id', '==', userId]]);
+      const allocatedIds = new Set(allocations.map(a => a.resource_id));
+      resources = resources.filter(r => allocatedIds.has(r.resource_id || r.id));
     }
 
     if (subject) {
-      sql += ' AND LOWER(r.subject) LIKE ?';
-      params.push(`%${subject.toLowerCase()}%`);
+      const subLower = subject.toLowerCase();
+      resources = resources.filter(r => r.subject && r.subject.toLowerCase().includes(subLower));
     }
+
     if (semester) {
-      sql += ' AND r.semester = ?';
-      params.push(parseInt(semester, 10));
+      const semNum = parseInt(semester, 10);
+      resources = resources.filter(r => Number(r.semester) === semNum);
     }
+
     if (q) {
-      sql += ' AND (LOWER(r.title) LIKE ? OR LOWER(r.description) LIKE ? OR LOWER(r.subject) LIKE ?)';
-      params.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
+      const qLower = q.toLowerCase();
+      resources = resources.filter(r =>
+        (r.title && r.title.toLowerCase().includes(qLower)) ||
+        (r.description && r.description.toLowerCase().includes(qLower)) ||
+        (r.subject && r.subject.toLowerCase().includes(qLower))
+      );
     }
 
-    sql += ' ORDER BY r.uploaded_at DESC';
+    const enriched = [];
+    for (const r of resources) {
+      const sp = await getDoc(COLLECTIONS.STUDENT_PROFILES, r.mentor_id);
+      const stp = await getDoc(COLLECTIONS.STAFF_PROFILES, r.mentor_id);
+      enriched.push({
+        ...r,
+        uploader_name: (sp && sp.full_name) || (stp && stp.full_name) || 'Academic Mentor'
+      });
+    }
 
-    const resourcesRes = await query(sql, params);
-    return res.json({ resources: resourcesRes.rows });
+    enriched.sort((a, b) => new Date(b.uploaded_at || 0) - new Date(a.uploaded_at || 0));
+    return res.json({ resources: enriched });
   } catch (err) {
     console.error('getResources error:', err);
     return res.status(500).json({ error: 'Failed to fetch resources.' });
@@ -355,15 +420,13 @@ async function getResources(req, res) {
 }
 
 // POST /api/mentor/resources/:resourceId/allocate
-// Explicitly allocates a resource to specified student(s) or all mentor mentees
 async function allocateResource(req, res) {
   try {
     const { resourceId } = req.params;
-    const { studentIds } = req.body; // array of student user_ids
-    const mentorId = req.user.userId;
+    const { studentIds } = req.body;
 
-    const resCheck = await query('SELECT * FROM resources WHERE resource_id = ?', [resourceId]);
-    if (resCheck.rowCount === 0) {
+    const resource = await getDoc(COLLECTIONS.RESOURCES, resourceId);
+    if (!resource) {
       return res.status(404).json({ error: 'Resource not found.' });
     }
 
@@ -372,13 +435,22 @@ async function allocateResource(req, res) {
     }
 
     let allocatedCount = 0;
+    const now = nowISO();
+
     for (const sid of studentIds) {
-      const existing = await query('SELECT allocation_id FROM resource_allocations WHERE resource_id = ? AND student_id = ?', [resourceId, sid]);
-      if (existing.rowCount === 0) {
-        await query(
-          'INSERT INTO resource_allocations (allocation_id, resource_id, student_id, allocated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-          [uuidv4(), resourceId, sid]
-        );
+      const existing = await queryDocs(COLLECTIONS.RESOURCE_ALLOCATIONS, [
+        ['resource_id', '==', resourceId],
+        ['student_id', '==', sid]
+      ]);
+
+      if (existing.length === 0) {
+        const allocId = uuidv4();
+        await setDoc(COLLECTIONS.RESOURCE_ALLOCATIONS, allocId, {
+          allocation_id: allocId,
+          resource_id: resourceId,
+          student_id: sid,
+          allocated_at: now
+        });
         allocatedCount++;
       }
     }
@@ -394,35 +466,31 @@ async function allocateResource(req, res) {
 }
 
 // GET /api/mentor/resources/:resourceId/download
-// Secure, authorized download handler
 async function downloadResource(req, res) {
   try {
     const { resourceId } = req.params;
     const userRole = req.user.role;
     const userId = req.user.userId;
 
-    const resCheck = await query('SELECT * FROM resources WHERE resource_id = ?', [resourceId]);
-    if (resCheck.rowCount === 0) {
+    const resource = await getDoc(COLLECTIONS.RESOURCES, resourceId);
+    if (!resource) {
       return res.status(404).json({ error: 'Resource not found.' });
     }
 
-    const resource = resCheck.rows[0];
-
-    // Authorization check:
-    // If student, must be assigned
     if (userRole === 'student') {
-      const alloc = await query('SELECT allocation_id FROM resource_allocations WHERE resource_id = ? AND student_id = ?', [resourceId, userId]);
-      if (alloc.rowCount === 0) {
+      const alloc = await queryDocs(COLLECTIONS.RESOURCE_ALLOCATIONS, [
+        ['resource_id', '==', resourceId],
+        ['student_id', '==', userId]
+      ]);
+      if (alloc.length === 0) {
         return res.status(403).json({ error: 'Access denied. You do not have permission to download this resource.' });
       }
     }
 
-    // If external link, return direct redirection or link
     if (resource.file_url_or_link.startsWith('http://') || resource.file_url_or_link.startsWith('https://')) {
       return res.redirect(resource.file_url_or_link);
     }
 
-    // Resolving local uploaded file
     const filename = path.basename(resource.file_url_or_link);
     const possiblePaths = [
       path.resolve(__dirname, '../../../uploads', filename),
@@ -442,9 +510,8 @@ async function downloadResource(req, res) {
       return res.status(404).json({ error: 'File not found on server storage.' });
     }
 
-    // Download with safe original file name
     const ext = path.extname(filename) || '.pdf';
-    const safeTitle = resource.title.replace(/[^a-zA-Z0-9_-]/g, '_') + ext;
+    const safeTitle = (resource.title || 'document').replace(/[^a-zA-Z0-9_-]/g, '_') + ext;
     return res.download(filePath, safeTitle);
   } catch (err) {
     console.error('downloadResource error:', err);
@@ -463,10 +530,15 @@ async function sendGuidanceMessage(req, res) {
     }
 
     const guidanceId = uuidv4();
-    await query(`
-      INSERT INTO guidance_messages (guidance_id, mentor_id, subject, target_type, target_id, message)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [guidanceId, mentorId, subject || 'General Guidance', targetType, targetId || null, message.trim()]);
+    await setDoc(COLLECTIONS.GUIDANCE_MESSAGES, guidanceId, {
+      guidance_id: guidanceId,
+      mentor_id: mentorId,
+      subject: subject || 'General Guidance',
+      target_type: targetType,
+      target_id: targetId || null,
+      message: message.trim(),
+      created_at: nowISO()
+    });
 
     return res.status(201).json({ message: 'Guidance message broadcasted successfully.' });
   } catch (err) {

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from './services/api';
+import { auth } from './firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import Sidebar from './components/Sidebar';
 import AuthPage from './pages/AuthPage';
 import StudentHome from './pages/StudentHome';
@@ -32,8 +34,12 @@ import ReportDialog from './components/ReportDialog';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
-    const saved = localStorage.getItem('user');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = sessionStorage.getItem('user') || localStorage.getItem('user');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
   });
 
   const [activePage, setActivePage] = useState('home');
@@ -52,7 +58,28 @@ export default function App() {
     if (currentUser) {
       loadUnreadCount();
       const interval = setInterval(loadUnreadCount, 30000);
-      return () => clearInterval(interval);
+
+      // Recheck Firebase verification status on return to application (tab-scoped)
+      const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+        if (fbUser && currentUser && currentUser.role !== 'admin') {
+          const currentId = currentUser.userId || currentUser.user_id;
+          // Ensure this auth state event belongs to THIS tab's user before acting
+          if (fbUser.uid === currentId || fbUser.email === currentUser.email) {
+            try {
+              await fbUser.reload();
+              if (!fbUser.emailVerified) {
+                console.warn('[App] Verification required. Redirecting to login.');
+                handleLogout();
+              }
+            } catch (e) {}
+          }
+        }
+      });
+
+      return () => {
+        clearInterval(interval);
+        unsubscribe();
+      };
     }
   }, [currentUser]);
 
@@ -72,6 +99,8 @@ export default function App() {
   }
 
   function handleLogout() {
+    sessionStorage.removeItem('token');
+    sessionStorage.removeItem('user');
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setCurrentUser(null);
@@ -217,23 +246,12 @@ export default function App() {
         {currentUser.role === 'faculty' && (
           <>
             {activePage === 'home' && <FacultyOverview user={currentUser} />}
-            {activePage === 'faculty-sessions' && <FacultySessions user={currentUser} />}
-            {activePage === 'students' && <FacultyStudents user={currentUser} onNavigateChat={handleNavigateChat} />}
-            {activePage === 'chat' && (
-              <ChatPage
-                initialConnectionId={chatConnectionId}
-                onNavigateSchedule={handleNavigateSchedule}
-                onSelectProfile={handleSelectProfile}
-                onOpenReport={handleOpenReport}
-              />
-            )}
-            {activePage === 'reports' && <FacultyReports user={currentUser} />}
+            {activePage === 'students' && <FacultyStudents user={currentUser} />}
             {activePage === 'profile' && <MyProfile user={currentUser} />}
             {activePage === 'view-profile' && (
               <BuddyProfileView
                 userId={selectedProfileId}
                 onBack={() => setActivePage('students')}
-                onNavigateChat={handleNavigateChat}
                 onNavigateSchedule={handleNavigateSchedule}
                 onOpenReport={handleOpenReport}
               />

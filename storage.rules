@@ -1,0 +1,40 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isAuthenticated() && (request.auth.token.email_verified == true || request.auth.token.role == 'admin');
+    }
+
+    // Profile photos: Users can read all profile photos, write only their own
+    match /avatars/{userId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isEmailVerified() && request.auth.uid == userId
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+    }
+
+    // Chat attachments: Only verified users can upload attachments (max 10MB)
+    match /attachments/{connectionId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isEmailVerified()
+                   && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // Mentoring resources & study materials (max 25MB)
+    match /resources/{resourceId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isEmailVerified()
+                   && request.resource.size < 25 * 1024 * 1024;
+    }
+
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

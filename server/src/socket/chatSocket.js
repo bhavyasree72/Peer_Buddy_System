@@ -1,6 +1,13 @@
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { query } = require('../database/db');
+const {
+  COLLECTIONS,
+  getDoc,
+  queryDocs,
+  updateDoc,
+  getBatch,
+  nowISO
+} = require('../database/firestoreDb');
 const { JWT_SECRET } = require('../middleware/auth');
 
 // Track online users: userId -> Set of socket IDs
@@ -38,12 +45,8 @@ function setupSocket(io) {
     // Join a connection room with server-side authorization check
     socket.on('join_room', async ({ connectionId }) => {
       try {
-        const connCheck = await query(`
-          SELECT connection_id FROM connections
-          WHERE connection_id = ? AND (user_a = ? OR user_b = ?) AND status = 'active'
-        `, [connectionId, userId, userId]);
-
-        if (connCheck.rowCount > 0) {
+        const conn = await getDoc(COLLECTIONS.CONNECTIONS, connectionId);
+        if (conn && (conn.user_a === userId || conn.user_b === userId) && conn.status === 'active') {
           socket.join(connectionId);
         } else {
           socket.emit('error', { message: 'Unauthorized room access' });
@@ -59,35 +62,26 @@ function setupSocket(io) {
     });
 
     // Typing indicators
-    socket.on('typing_start', ({ connectionId, buddyId }) => {
+    socket.on('typing_start', ({ connectionId }) => {
       socket.to(connectionId).emit('typing_start', { connectionId, userId });
     });
 
-    socket.on('typing_stop', ({ connectionId, buddyId }) => {
+    socket.on('typing_stop', ({ connectionId }) => {
       socket.to(connectionId).emit('typing_stop', { connectionId, userId });
     });
 
     // Real-time message broadcasting (row is already saved via POST /api/chat/send)
     socket.on('send_message', async ({ connectionId, body, attachmentUrl, attachmentName, attachmentType, messageId: clientMsgId, sentAt }) => {
       try {
-        // Enforce membership check
-        const connCheck = await query(`
-          SELECT connection_id FROM connections
-          WHERE connection_id = ? AND (user_a = ? OR user_b = ?) AND status = 'active'
-        `, [connectionId, userId, userId]);
-
-        if (connCheck.rowCount === 0) {
+        const conn = await getDoc(COLLECTIONS.CONNECTIONS, connectionId);
+        if (!conn || (conn.user_a !== userId && conn.user_b !== userId) || conn.status !== 'active') {
           return socket.emit('error', { message: 'Unauthorized: cannot send message to this conversation.' });
         }
 
-        const senderRes = await query(`
-          SELECT COALESCE(sp.full_name, stp.full_name, u.email, 'NMIMS User') as full_name
-          FROM users u
-          LEFT JOIN student_profiles sp ON u.user_id = sp.user_id
-          LEFT JOIN staff_profiles stp ON u.user_id = stp.user_id
-          WHERE u.user_id = ?
-        `, [userId]);
-        const senderName = senderRes.rows[0] ? senderRes.rows[0].full_name : 'NMIMS User';
+        const sp = await getDoc(COLLECTIONS.STUDENT_PROFILES, userId);
+        const stp = await getDoc(COLLECTIONS.STAFF_PROFILES, userId);
+        const userDoc = await getDoc(COLLECTIONS.USERS, userId);
+        const senderName = (sp && sp.full_name) || (stp && stp.full_name) || (userDoc && userDoc.email) || 'NMIMS User';
 
         const newMsg = {
           message_id: clientMsgId || uuidv4(),
@@ -99,7 +93,7 @@ function setupSocket(io) {
           attachment_name: attachmentName,
           attachment_type: attachmentType,
           status: 'sent',
-          sent_at: sentAt || new Date().toISOString()
+          sent_at: sentAt || nowISO()
         };
 
         // Broadcast to all sockets in the conversation room except sender
@@ -112,10 +106,20 @@ function setupSocket(io) {
     // Message read receipt
     socket.on('mark_read', async ({ connectionId }) => {
       try {
-        await query(`
-          UPDATE messages SET status = 'read'
-          WHERE connection_id = ? AND sender_id != ? AND status != 'read'
-        `, [connectionId, userId]);
+        const msgs = await queryDocs(COLLECTIONS.MESSAGES, [
+          ['connection_id', '==', connectionId]
+        ]);
+        const unread = msgs.filter(m => m.sender_id !== userId && m.status !== 'read');
+
+        if (unread.length > 0) {
+          const batch = getBatch();
+          const { collection } = require('../database/firestoreDb');
+          unread.forEach(m => {
+            const mId = m.message_id || m.id;
+            batch.update(collection(COLLECTIONS.MESSAGES).doc(mId), { status: 'read' });
+          });
+          await batch.commit();
+        }
 
         socket.to(connectionId).emit('messages_read', { connectionId, readerId: userId });
       } catch (err) {

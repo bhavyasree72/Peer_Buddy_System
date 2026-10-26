@@ -1,13 +1,50 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../services/api';
+import { api, apiRequest } from '../services/api';
 import { CheckCircle2, AlertCircle, Eye, EyeOff, ShieldCheck } from 'lucide-react';
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  confirmPasswordReset,
+  verifyPasswordResetCode,
+  setPersistence,
+  browserLocalPersistence,
+  signOut
+} from 'firebase/auth';
+import { auth, db } from '../firebase';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  collection,
+  query,
+  where,
+  getDocs
+} from 'firebase/firestore';
 
 export default function AuthPage({ onLoginSuccess }) {
   const [isRegister, setIsRegister] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [forgotMode, setForgotMode] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
+  const [unverifiedEmail, setUnverifiedEmail] = useState('');
   const [master, setMaster] = useState({ schools: [], programs: [], mentors: [] });
+
+  // Complete Profile mode (for Firebase Auth users missing Firestore profiles)
+  const [completeProfileMode, setCompleteProfileMode] = useState(false);
+  const [completeProfileData, setCompleteProfileData] = useState(null);
+  const [completeProfileRole, setCompleteProfileRole] = useState('student');
+  const [completeProfileForm, setCompleteProfileForm] = useState({
+    fullName: '',
+    sapId: '',
+    schoolId: '',
+    programId: '',
+    year: '',
+    semester: '',
+    department: '',
+    designation: ''
+  });
 
   // Login form state - ISOLATED per role (Student, Faculty, Mentor)
   const [loginRole, setLoginRole] = useState('student');
@@ -66,11 +103,36 @@ export default function AuthPage({ onLoginSuccess }) {
   const currentForm = selectedRole === 'student' ? studentForm : selectedRole === 'faculty' ? facultyForm : mentorForm;
 
   useEffect(() => {
-    api.getMasterData().then(data => {
-      if (data) {
-        setMaster(data);
+    async function fetchMaster() {
+      try {
+        const data = await api.getMasterData();
+        if (data && data.schools && data.schools.length > 0) {
+          setMaster(data);
+          return;
+        }
+      } catch (err) {
+        console.warn('[MasterData] API fallback to Firestore:', err.message);
       }
-    }).catch(err => console.error(err));
+      try {
+        const schoolsSnap = await getDocs(collection(db, 'schools'));
+        const programsSnap = await getDocs(collection(db, 'programs'));
+        const mentorsSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'mentor')));
+        
+        const schools = schoolsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const programs = programsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const mentors = mentorsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        setMaster(prev => ({
+          ...prev,
+          schools: schools.length > 0 ? schools : prev.schools,
+          programs: programs.length > 0 ? programs : prev.programs,
+          mentors: mentors.length > 0 ? mentors : prev.mentors
+        }));
+      } catch (e) {
+        console.error('[MasterData] Firestore fallback error:', e);
+      }
+    }
+    fetchMaster();
   }, []);
 
   const [loading, setLoading] = useState(false);
@@ -87,13 +149,23 @@ export default function AuthPage({ onLoginSuccess }) {
     // Check if URL has reset-password in search or hash
     const searchParams = new URLSearchParams(window.location.search);
     const hash = window.location.hash || '';
-    let token = searchParams.get('token');
+    const mode = searchParams.get('mode');
+    const oobCode = searchParams.get('oobCode');
+    let token = searchParams.get('token') || oobCode;
+
     if (!token && hash.includes('token=')) {
       const hashQuery = hash.includes('?') ? hash.split('?')[1] : hash.replace(/^#/, '');
       const hashParams = new URLSearchParams(hashQuery);
-      token = hashParams.get('token');
+      token = hashParams.get('token') || hashParams.get('oobCode');
     }
-    if (token) {
+
+    if (mode === 'resetPassword' && oobCode) {
+      setResetToken(oobCode);
+      setResetMode(true);
+      verifyPasswordResetCode(auth, oobCode).catch(() => {
+        setError('This password reset link is invalid or has expired. Please request a new one.');
+      });
+    } else if (token) {
       setResetToken(token);
       setResetMode(true);
     }
@@ -123,6 +195,7 @@ export default function AuthPage({ onLoginSuccess }) {
     setSelectedRole(newRole);
     setError('');
     setMessage('');
+    setUnverifiedEmail('');
     setStep(1);
   }
 
@@ -142,15 +215,283 @@ export default function AuthPage({ onLoginSuccess }) {
     e.preventDefault();
     setError('');
     setMessage('');
+    setUnverifiedEmail('');
+    setLoading(true);
+
+    const trimmedEmail = currentLoginEmail.trim().toLowerCase();
+    const password = currentLoginPassword;
+
+    try {
+      // Ensure persistent authentication across page refreshes and tab closures
+      await setPersistence(auth, browserLocalPersistence).catch(() => {});
+
+      // 1. Authenticate with Firebase Authentication
+      let userCred;
+      try {
+        userCred = await signInWithEmailAndPassword(auth, trimmedEmail, password);
+      } catch (fbErr) {
+        if (fbErr.code === 'auth/wrong-password' || fbErr.code === 'auth/user-not-found' || fbErr.code === 'auth/invalid-credential') {
+          // If not in Firebase yet (e.g. pre-existing seed account), try legacy backend
+          try {
+            const legacyRes = await api.login({ email: trimmedEmail, password });
+            sessionStorage.setItem('token', legacyRes.accessToken);
+            sessionStorage.setItem('user', JSON.stringify(legacyRes.user));
+            localStorage.setItem('token', legacyRes.accessToken);
+            localStorage.setItem('user', JSON.stringify(legacyRes.user));
+            onLoginSuccess(legacyRes.user);
+            return;
+          } catch (legErr) {
+            throw new Error('That email and password do not match. Please try again or reset your password.');
+          }
+        } else if (fbErr.code === 'auth/user-disabled') {
+          throw new Error('Your account has been disabled. Please contact the administrator.');
+        } else if (fbErr.code === 'auth/too-many-requests') {
+          throw new Error('Too many failed login attempts. Please wait a few minutes before trying again.');
+        } else {
+          throw new Error(fbErr.message || 'Authentication failed. Please check your credentials.');
+        }
+      }
+
+      if (userCred && userCred.user) {
+        // 2. Refresh authentication state to get latest emailVerified status
+        await userCred.user.reload();
+        const fbUser = auth.currentUser;
+        const idToken = await fbUser.getIdToken(true);
+
+        // 3. Resolve user document and profile directly from Firestore
+        let userDocData = null;
+        let profileDocData = null;
+
+        try {
+          const userDocSnap = await getDoc(doc(db, 'users', fbUser.uid));
+          if (userDocSnap.exists()) {
+            userDocData = userDocSnap.data();
+          } else {
+            // Check for UID mismatch by querying email
+            const q = query(collection(db, 'users'), where('email', '==', trimmedEmail));
+            const querySnap = await getDocs(q);
+            if (!querySnap.empty) {
+              const matchedDoc = querySnap.docs[0];
+              userDocData = { ...matchedDoc.data(), user_id: fbUser.uid };
+              await setDoc(doc(db, 'users', fbUser.uid), userDocData).catch(() => {});
+            }
+          }
+        } catch (dbErr) {
+          console.warn('[Login] Firestore user lookup note:', dbErr.message);
+        }
+
+        // Try backend firebaseLogin as enrichment if available
+        let backendProfileRes = null;
+        try {
+          backendProfileRes = await api.firebaseLogin({ idToken, email: trimmedEmail });
+          if (backendProfileRes && backendProfileRes.user) {
+            userDocData = userDocData || backendProfileRes.user;
+          }
+        } catch (apiErr) {
+          console.warn('[Login] Backend firebaseLogin notice:', apiErr.message);
+        }
+
+        // Check if user is suspended or deleted
+        if (userDocData && (userDocData.status === 'suspended' || userDocData.status === 'deleted')) {
+          await signOut(auth);
+          throw new Error('Your account is no longer active. Please contact the administrator.');
+        }
+
+        const userRole = userDocData?.role || backendProfileRes?.user?.role || loginRole;
+
+        // Fetch detailed profile (student_profiles or staff_profiles)
+        try {
+          const profileCollection = userRole === 'student' ? 'student_profiles' : 'staff_profiles';
+          const profDocSnap = await getDoc(doc(db, profileCollection, fbUser.uid));
+          if (profDocSnap.exists()) {
+            profileDocData = profDocSnap.data();
+          } else if (userDocData?.user_id && userDocData.user_id !== fbUser.uid) {
+            const oldProfSnap = await getDoc(doc(db, profileCollection, userDocData.user_id));
+            if (oldProfSnap.exists()) {
+              profileDocData = { ...oldProfSnap.data(), user_id: fbUser.uid };
+              await setDoc(doc(db, profileCollection, fbUser.uid), profileDocData).catch(() => {});
+            }
+          }
+        } catch (profErr) {
+          console.warn('[Login] Profile lookup notice:', profErr.message);
+        }
+
+        // If no userDoc or profile found anywhere, open safe profile completion modal
+        if (!userDocData && !backendProfileRes?.user) {
+          setCompleteProfileData({
+            uid: fbUser.uid,
+            email: trimmedEmail,
+            idToken: idToken,
+            emailVerified: !!fbUser.emailVerified
+          });
+          setCompleteProfileRole(loginRole);
+          setCompleteProfileMode(true);
+          return;
+        }
+
+        // 4. Block unverified users across Student, Faculty, and Mentor roles (Admin exempt)
+        if (!fbUser.emailVerified && userRole !== 'admin') {
+          setUnverifiedEmail(trimmedEmail);
+          setError('Email verification required. We sent a verification link to your Gmail address. Please verify your email before logging in.');
+          return;
+        }
+
+        // 5. Construct resolved user object
+        const resolvedUser = {
+          userId: fbUser.uid,
+          user_id: fbUser.uid,
+          email: trimmedEmail,
+          sapId: userDocData?.sap_id || userDocData?.sapId || null,
+          role: userRole,
+          fullName: profileDocData?.full_name || profileDocData?.fullName || userDocData?.fullName || fbUser.displayName || trimmedEmail.split('@')[0],
+          photoUrl: profileDocData?.photo_url || fbUser.photoURL || null,
+          semester: profileDocData?.semester || 1,
+          profileCompleteness: profileDocData?.profile_completeness || 40,
+          emailVerified: !!fbUser.emailVerified
+        };
+
+        // 6. Establish persistent session
+        sessionStorage.setItem('token', backendProfileRes?.accessToken || idToken);
+        sessionStorage.setItem('user', JSON.stringify(resolvedUser));
+        localStorage.setItem('token', backendProfileRes?.accessToken || idToken);
+        localStorage.setItem('user', JSON.stringify(resolvedUser));
+
+        onLoginSuccess(resolvedUser);
+      }
+    } catch (err) {
+      if (err.message && err.message.toLowerCase().includes('verification required')) {
+        setUnverifiedEmail(trimmedEmail);
+      }
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCompleteProfile(e) {
+    e.preventDefault();
+    setError('');
+    setMessage('');
     setLoading(true);
 
     try {
-      const res = await api.login({ email: currentLoginEmail, password: currentLoginPassword });
-      localStorage.setItem('token', res.accessToken);
-      localStorage.setItem('user', JSON.stringify(res.user));
-      onLoginSuccess(res.user);
+      const trimmedName = (completeProfileForm.fullName || '').trim();
+      if (trimmedName.length < 2 || !/^[a-zA-Z\s]+$/.test(trimmedName)) {
+        throw new Error('Full Name must contain letters and spaces only (minimum 2 characters).');
+      }
+
+      const payload = {
+        uid: completeProfileData.uid,
+        email: completeProfileData.email,
+        role: completeProfileRole,
+        fullName: trimmedName,
+        emailVerified: !!completeProfileData.emailVerified
+      };
+
+      if (completeProfileRole === 'student') {
+        const trimmedSap = (completeProfileForm.sapId || '').trim();
+        if (!/^7\d{10}$/.test(trimmedSap)) {
+          throw new Error('SAP ID must be exactly 11 digits, numeric only, and start with 7 (e.g. 70572400072).');
+        }
+        if (!completeProfileForm.schoolId) throw new Error('Please select a school.');
+        if (!completeProfileForm.programId) throw new Error('Please select a program / branch.');
+        if (!completeProfileForm.year) throw new Error('Please select an academic year.');
+        if (!completeProfileForm.semester) throw new Error('Please select a semester.');
+
+        payload.sapId = trimmedSap;
+        payload.schoolId = completeProfileForm.schoolId;
+        payload.programId = completeProfileForm.programId;
+        payload.year = parseInt(completeProfileForm.year, 10);
+        payload.semester = parseInt(completeProfileForm.semester, 10);
+      } else {
+        const trimmedDept = (completeProfileForm.department || '').trim();
+        const trimmedDesig = (completeProfileForm.designation || '').trim();
+        if (!trimmedDept) throw new Error('Please enter your department.');
+        if (!trimmedDesig) throw new Error('Please enter your designation.');
+
+        payload.department = trimmedDept;
+        payload.designation = trimmedDesig;
+      }
+
+      // 1. Write directly to Cloud Firestore as primary persistence
+      const nowStr = new Date().toISOString();
+      const userDocRef = doc(db, 'users', completeProfileData.uid);
+      await setDoc(userDocRef, {
+        user_id: completeProfileData.uid,
+        email: completeProfileData.email,
+        role: completeProfileRole,
+        status: 'active',
+        email_verified: completeProfileData.emailVerified ? 1 : 0,
+        failed_login_attempts: 0,
+        lockout_until: null,
+        created_at: nowStr,
+        last_login: nowStr,
+        ...(completeProfileRole === 'student' ? { sap_id: payload.sapId } : {})
+      }, { merge: true }).catch(e => console.warn('[CompleteProfile] Firestore user notice:', e));
+
+      const profileColl = completeProfileRole === 'student' ? 'student_profiles' : 'staff_profiles';
+      const profDocRef = doc(db, profileColl, completeProfileData.uid);
+      const profData = completeProfileRole === 'student' ? {
+        user_id: completeProfileData.uid,
+        full_name: payload.fullName,
+        school_id: payload.schoolId,
+        program_id: payload.programId,
+        year: payload.year,
+        semester: payload.semester,
+        bio: null,
+        photo_url: null,
+        study_mode: 'both',
+        open_to_requests: 1,
+        show_email: 0,
+        show_availability: 1,
+        profile_completeness: 40,
+        created_at: nowStr
+      } : {
+        user_id: completeProfileData.uid,
+        full_name: payload.fullName,
+        department: payload.department,
+        designation: payload.designation,
+        expertise: null,
+        photo_url: null,
+        created_at: nowStr
+      };
+      await setDoc(profDocRef, profData, { merge: true }).catch(e => console.warn('[CompleteProfile] Firestore profile notice:', e));
+
+      // 2. Invoke backend API if available
+      let res = null;
+      try {
+        res = await api.completeProfile(payload, completeProfileData.idToken);
+      } catch (apiErr) {
+        console.warn('[CompleteProfile] Backend notice:', apiErr.message);
+      }
+
+      const finalUser = res?.user || {
+        userId: completeProfileData.uid,
+        user_id: completeProfileData.uid,
+        email: completeProfileData.email,
+        sapId: payload.sapId || null,
+        role: completeProfileRole,
+        fullName: payload.fullName,
+        photoUrl: null,
+        semester: payload.semester || 1,
+        profileCompleteness: 40,
+        emailVerified: !!completeProfileData.emailVerified
+      };
+
+      if (!completeProfileData.emailVerified && completeProfileRole !== 'admin') {
+        setUnverifiedEmail(completeProfileData.email);
+        setMessage('Profile details saved successfully! Email verification is required before logging in. Please check your Gmail inbox and verify your email.');
+        setCompleteProfileMode(false);
+        return;
+      }
+
+      sessionStorage.setItem('token', res?.accessToken || completeProfileData.idToken);
+      sessionStorage.setItem('user', JSON.stringify(finalUser));
+      localStorage.setItem('token', res?.accessToken || completeProfileData.idToken);
+      localStorage.setItem('user', JSON.stringify(finalUser));
+      onLoginSuccess(finalUser);
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Failed to complete profile.');
     } finally {
       setLoading(false);
     }
@@ -160,6 +501,7 @@ export default function AuthPage({ onLoginSuccess }) {
     e.preventDefault();
     setError('');
     setMessage('');
+    setUnverifiedEmail('');
 
     // Step 1 validation
     if (step === 1) {
@@ -244,12 +586,92 @@ export default function AuthPage({ onLoginSuccess }) {
     }
 
     setLoading(true);
+    const trimmedEmail = currentForm.email.trim().toLowerCase();
+
     try {
-      const payload = {
+      // 1. Create account in Firebase Authentication as the single source of truth
+      let userCred;
+      try {
+        userCred = await createUserWithEmailAndPassword(auth, trimmedEmail, currentForm.password);
+      } catch (fbErr) {
+        if (fbErr.code === 'auth/email-already-in-use') {
+          throw new Error('An account with this email address already exists. Please sign in instead.');
+        } else if (fbErr.code === 'auth/weak-password') {
+          throw new Error('Password does not meet Firebase security requirements.');
+        } else if (fbErr.code === 'auth/invalid-email') {
+          throw new Error('Invalid email address format.');
+        } else {
+          throw new Error(fbErr.message || 'Failed to create Firebase Authentication account.');
+        }
+      }
+
+      const uid = userCred.user.uid;
+      const idToken = await userCred.user.getIdToken();
+
+      // 2. Send real verification email via Firebase Authentication
+      const actionCodeSettings = {
+        url: window.location.origin + window.location.pathname,
+        handleCodeInApp: false
+      };
+      let emailSent = false;
+      try {
+        await sendEmailVerification(userCred.user, actionCodeSettings);
+        emailSent = true;
+      } catch (emErr) {
+        console.error('sendEmailVerification error:', emErr);
+      }
+
+      // 3. Write profile directly into Cloud Firestore as primary persistence
+      const nowStr = new Date().toISOString();
+      const userDocRef = doc(db, 'users', uid);
+      await setDoc(userDocRef, {
+        user_id: uid,
+        email: trimmedEmail,
+        role: selectedRole,
+        status: 'active',
+        email_verified: 0,
+        failed_login_attempts: 0,
+        lockout_until: null,
+        created_at: nowStr,
+        last_login: null,
+        ...(selectedRole === 'student' ? { sap_id: currentForm.sapId.trim() } : {})
+      }).catch(e => console.warn('[Register] Firestore user notice:', e));
+
+      const profileColl = selectedRole === 'student' ? 'student_profiles' : 'staff_profiles';
+      const profDocRef = doc(db, profileColl, uid);
+      const profData = selectedRole === 'student' ? {
+        user_id: uid,
+        full_name: currentForm.fullName.trim(),
+        school_id: currentForm.schoolId,
+        program_id: currentForm.programId,
+        year: parseInt(currentForm.year, 10),
+        semester: parseInt(currentForm.semester, 10),
+        mentor_id: currentForm.mentorId || null,
+        bio: null,
+        photo_url: null,
+        study_mode: 'both',
+        open_to_requests: 1,
+        show_email: 0,
+        show_availability: 1,
+        profile_completeness: 40,
+        created_at: nowStr
+      } : {
+        user_id: uid,
+        full_name: currentForm.fullName.trim(),
+        department: currentForm.department.trim(),
+        designation: currentForm.designation.trim(),
+        expertise: null,
+        photo_url: null,
+        created_at: nowStr
+      };
+      await setDoc(profDocRef, profData).catch(e => console.warn('[Register] Firestore profile notice:', e));
+
+      const profilePayload = {
+        uid,
         role: selectedRole,
         fullName: currentForm.fullName.trim(),
-        email: currentForm.email.trim().toLowerCase(),
-        password: currentForm.password,
+        email: trimmedEmail,
+        emailVerified: false,
         ...(selectedRole === 'student' ? {
           sapId: currentForm.sapId.trim(),
           schoolId: currentForm.schoolId,
@@ -263,24 +685,74 @@ export default function AuthPage({ onLoginSuccess }) {
         })
       };
 
-      const res = await api.register(payload);
-      const successMsg = res.emailSent
-        ? 'Account created successfully! You can sign in now.'
-        : 'Account created. You can sign in now. The confirmation email could not be sent.';
+      try {
+        await api.syncProfile(profilePayload, idToken);
+      } catch (apiErr) {
+        console.warn('[Register] Backend syncProfile notice:', apiErr.message);
+      }
+
+      // Sign out immediately so unverified account does not persist in active session
+      await signOut(auth);
+
+      const successMsg = emailSent
+        ? 'Account created successfully! A verification email has been sent to your Gmail address. Please verify your email before logging in.'
+        : 'Account created successfully! Please click "Resend Verification Email" if you do not receive your verification link shortly.';
+
       setMessage(successMsg);
+      setUnverifiedEmail(trimmedEmail);
       setIsRegister(false);
       setStep(1);
       setStudentForm(initialStudentData);
       setFacultyForm(initialStaffData);
       setMentorForm(initialStaffData);
-      // Pre-fill registered email in the corresponding role's login box
       setLoginRole(selectedRole);
       setLoginForms(prev => ({
         ...prev,
-        [selectedRole]: { email: payload.email, password: '' }
+        [selectedRole]: { email: trimmedEmail, password: '' }
       }));
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleResendVerification() {
+    if (!unverifiedEmail && !currentLoginEmail) {
+      setError('Please enter your registered Gmail address to resend the verification email.');
+      return;
+    }
+    const targetEmail = (unverifiedEmail || currentLoginEmail).trim().toLowerCase();
+    setLoading(true);
+    setError('');
+    setMessage('');
+
+    try {
+      let targetUser = auth.currentUser;
+      if (!targetUser && currentLoginPassword) {
+        try {
+          const cred = await signInWithEmailAndPassword(auth, targetEmail, currentLoginPassword);
+          targetUser = cred.user;
+        } catch (e) {}
+      }
+
+      if (targetUser) {
+        await sendEmailVerification(targetUser, {
+          url: window.location.origin + window.location.pathname,
+          handleCodeInApp: false
+        });
+        setMessage(`Verification email has been resent to ${targetEmail}. Please check your inbox.`);
+      } else {
+        // Fallback to server endpoint
+        await apiRequest('/auth/resend-verification', 'POST', { email: targetEmail });
+        setMessage(`Verification email has been resent to ${targetEmail}. Please check your inbox.`);
+      }
+    } catch (err) {
+      if (err.code === 'auth/too-many-requests') {
+        setError('Too many verification requests. Please wait a few minutes before trying again.');
+      } else {
+        setError(err.message || 'Failed to resend verification email.');
+      }
     } finally {
       setLoading(false);
     }
@@ -305,12 +777,33 @@ export default function AuthPage({ onLoginSuccess }) {
 
     setLoading(true);
     try {
-      const res = await api.resetPassword({ token: resetToken, newPassword });
-      setMessage(res.message);
-      setResetMode(false);
-      window.location.hash = '';
+      // 1. Try Firebase Authentication confirmPasswordReset
+      try {
+        await confirmPasswordReset(auth, resetToken, newPassword);
+        setMessage('Your password has been successfully reset! You can now sign in with your new password.');
+        setResetMode(false);
+        setNewPassword('');
+        setConfirmNewPassword('');
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+      } catch (fbErr) {
+        if (fbErr.code === 'auth/expired-action-code') {
+          throw new Error('This password reset link has expired. Please request a new one.');
+        } else if (fbErr.code === 'auth/invalid-action-code') {
+          // Could be legacy token, fallback to server
+          const res = await api.resetPassword({ token: resetToken, newPassword });
+          setMessage(res.message);
+          setResetMode(false);
+          setNewPassword('');
+          setConfirmNewPassword('');
+          window.location.hash = '';
+          return;
+        } else {
+          throw fbErr;
+        }
+      }
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Failed to reset password.');
     } finally {
       setLoading(false);
     }
@@ -322,15 +815,40 @@ export default function AuthPage({ onLoginSuccess }) {
       setError('Please provide your registered Gmail address.');
       return;
     }
+    const trimmed = forgotEmail.trim().toLowerCase();
+    if (!trimmed.endsWith('@gmail.com')) {
+      setError('Please enter a valid Gmail address ending with @gmail.com.');
+      return;
+    }
     setLoading(true);
     setError('');
+    setMessage('');
     try {
-      const res = await api.forgotPassword(forgotEmail);
-      setMessage(res.message);
+      await sendPasswordResetEmail(auth, trimmed, {
+        url: window.location.origin + window.location.pathname,
+        handleCodeInApp: false
+      });
+      setMessage(`Password reset email sent to ${trimmed}! Please check your Gmail inbox and spam folder.`);
       setForgotMode(false);
       setForgotEmail('');
     } catch (err) {
-      setError(err.message);
+      if (err.code === 'auth/user-not-found') {
+        setMessage(`If an account exists for ${trimmed}, a password reset link has been sent.`);
+        setForgotMode(false);
+        setForgotEmail('');
+      } else if (err.code === 'auth/too-many-requests') {
+        setError('Too many password reset requests. Please wait a few minutes before trying again.');
+      } else {
+        // Fallback to server endpoint if needed
+        try {
+          const res = await api.forgotPassword(trimmed);
+          setMessage(res.message);
+          setForgotMode(false);
+          setForgotEmail('');
+        } catch (serverErr) {
+          setError(err.message || 'Failed to send password reset email.');
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -419,7 +937,7 @@ export default function AuthPage({ onLoginSuccess }) {
           {error && (
             <div style={{
               display: 'flex',
-              alignItems: 'center',
+              flexDirection: 'column',
               gap: '8px',
               padding: '12px',
               backgroundColor: 'var(--accent-tint)',
@@ -429,8 +947,31 @@ export default function AuthPage({ onLoginSuccess }) {
               fontSize: '13px',
               marginBottom: '20px'
             }}>
-              <AlertCircle size={18} style={{ flexShrink: 0 }} />
-              <span>{error}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <AlertCircle size={18} style={{ flexShrink: 0 }} />
+                <span>{error}</span>
+              </div>
+              {(unverifiedEmail || error.toLowerCase().includes('verification')) && (
+                <div style={{ marginTop: '4px' }}>
+                  <button
+                    type="button"
+                    onClick={handleResendVerification}
+                    disabled={loading}
+                    style={{
+                      background: 'none',
+                      border: '1px solid var(--accent)',
+                      color: 'var(--accent)',
+                      padding: '4px 10px',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: '600',
+                      fontSize: '12px'
+                    }}
+                  >
+                    Resend Verification Email
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -546,6 +1087,218 @@ export default function AuthPage({ onLoginSuccess }) {
               <button type="button" className="btn-secondary" style={{ width: '100%' }} onClick={() => { setForgotMode(false); setError(''); }}>
                 Back to login
               </button>
+            </form>
+          ) : completeProfileMode ? (
+            /* MODE: Complete Profile Form for authenticated users with missing profile (Requirement 3) */
+            <form onSubmit={handleCompleteProfile} autoComplete="off">
+              <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '4px' }}>
+                Complete Your Profile
+              </h2>
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
+                Authenticated as <strong>{completeProfileData?.email}</strong>. Please provide your profile details to finalize your account.
+              </p>
+
+              {/* Role selector */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ marginBottom: '6px', display: 'block', fontSize: '13px' }}>Select your account role</label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
+                  {[
+                    { id: 'student', label: 'Student' },
+                    { id: 'faculty', label: 'Faculty' },
+                    { id: 'mentor', label: 'Mentor' }
+                  ].map(r => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => setCompleteProfileRole(r.id)}
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: 'var(--radius-sm)',
+                        border: `1px solid ${completeProfileRole === r.id ? 'var(--accent)' : 'var(--border)'}`,
+                        backgroundColor: completeProfileRole === r.id ? 'var(--accent-tint)' : '#FFFFFF',
+                        color: completeProfileRole === r.id ? 'var(--accent)' : 'var(--text-main)',
+                        fontWeight: completeProfileRole === r.id ? '600' : '500',
+                        fontSize: '13px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Full Name */}
+              <div style={{ marginBottom: '12px' }}>
+                <label>Full Name *</label>
+                <input
+                  type="text"
+                  id="complete_fullname"
+                  name="complete_fullname"
+                  placeholder="e.g. Bhavya Sree"
+                  value={completeProfileForm.fullName}
+                  onChange={(e) => setCompleteProfileForm(prev => ({ ...prev, fullName: e.target.value }))}
+                  required
+                />
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  Letters and spaces only (min 2 characters)
+                </div>
+              </div>
+
+              {completeProfileRole === 'student' ? (
+                <>
+                  {/* SAP ID */}
+                  <div style={{ marginBottom: '12px' }}>
+                    <label>SAP ID (11 digits, starts with 7) *</label>
+                    <input
+                      type="text"
+                      id="complete_sap_id"
+                      name="complete_sap_id"
+                      maxLength={11}
+                      placeholder="70572400072"
+                      value={completeProfileForm.sapId}
+                      onChange={(e) => setCompleteProfileForm(prev => ({ ...prev, sapId: e.target.value.replace(/\D/g, '') }))}
+                      required
+                    />
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      Must be exactly 11 numeric digits starting with 7
+                    </div>
+                  </div>
+
+                  {/* School Dropdown */}
+                  <div style={{ marginBottom: '12px' }}>
+                    <label>School *</label>
+                    <select
+                      id="complete_school"
+                      value={completeProfileForm.schoolId}
+                      onChange={(e) => setCompleteProfileForm(prev => ({ ...prev, schoolId: e.target.value }))}
+                      required
+                    >
+                      <option value="" disabled>Select school…</option>
+                      {master.schools && master.schools.length > 0 ? (
+                        master.schools
+                          .filter(s => ['STME', 'SOL', 'SPTM', 'SBM', 'SOC'].includes((s.code || '').toUpperCase()))
+                          .map(s => (
+                            <option key={s.id} value={s.id}>{s.code} – {s.name.replace(/\s*\([^)]*\)$/, '')}</option>
+                          ))
+                      ) : (
+                        <>
+                          <option value="sch-stme">STME – School of Technology Management and Engineering</option>
+                          <option value="sch-sol">SOL – School of Law</option>
+                          <option value="sch-sptm">SPTM – School of Pharmacy & Technology Management</option>
+                          <option value="sch-sbm">SBM – School of Business Management</option>
+                          <option value="sch-soc">SOC – School of Commerce</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Program Dropdown */}
+                  <div style={{ marginBottom: '12px' }}>
+                    <label>Program / Branch *</label>
+                    <select
+                      id="complete_program"
+                      value={completeProfileForm.programId}
+                      onChange={(e) => setCompleteProfileForm(prev => ({ ...prev, programId: e.target.value }))}
+                      required
+                    >
+                      <option value="" disabled>Select program / branch…</option>
+                      {master.programs && master.programs.length > 0 ? (
+                        master.programs
+                          .filter(p => !completeProfileForm.schoolId || p.school_id === completeProfileForm.schoolId)
+                          .map(p => (
+                            <option key={p.id} value={p.id}>{p.name} ({p.code})</option>
+                          ))
+                      ) : (
+                        <>
+                          <option value="prog-csds">B.Tech Computer Science & Data Science (CSDS)</option>
+                          <option value="prog-aiml">B.Tech Artificial Intelligence & Machine Learning</option>
+                          <option value="prog-cse">B.Tech Computer Engineering</option>
+                          <option value="prog-it">B.Tech Information Technology</option>
+                          <option value="prog-mba-tech">MBA Tech Computer Science</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Year & Semester */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+                    <div>
+                      <label>Academic Year *</label>
+                      <select
+                        id="complete_year"
+                        value={completeProfileForm.year}
+                        onChange={(e) => setCompleteProfileForm(prev => ({ ...prev, year: e.target.value }))}
+                        required
+                      >
+                        <option value="" disabled>Select year…</option>
+                        <option value={1}>1st Year</option>
+                        <option value={2}>2nd Year</option>
+                        <option value={3}>3rd Year</option>
+                        <option value={4}>4th Year</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label>Semester *</label>
+                      <select
+                        id="complete_semester"
+                        value={completeProfileForm.semester}
+                        onChange={(e) => setCompleteProfileForm(prev => ({ ...prev, semester: e.target.value }))}
+                        required
+                      >
+                        <option value="" disabled>Select semester…</option>
+                        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(s => (
+                          <option key={s} value={s}>Semester {s}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Department */}
+                  <div style={{ marginBottom: '14px' }}>
+                    <label>Department *</label>
+                    <input
+                      type="text"
+                      id="complete_department"
+                      name="complete_department"
+                      placeholder="e.g. Computer Science & Engineering"
+                      value={completeProfileForm.department}
+                      onChange={(e) => setCompleteProfileForm(prev => ({ ...prev, department: e.target.value }))}
+                      required
+                    />
+                  </div>
+
+                  {/* Designation */}
+                  <div style={{ marginBottom: '20px' }}>
+                    <label>Designation *</label>
+                    <input
+                      type="text"
+                      id="complete_designation"
+                      name="complete_designation"
+                      placeholder={completeProfileRole === 'mentor' ? 'e.g. Senior Technical Mentor / Guide' : 'e.g. Assistant Professor'}
+                      value={completeProfileForm.designation}
+                      onChange={(e) => setCompleteProfileForm(prev => ({ ...prev, designation: e.target.value }))}
+                      required
+                    />
+                  </div>
+                </>
+              )}
+
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => { setCompleteProfileMode(false); setError(''); }}
+                  style={{ flex: 1 }}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="btn-primary" style={{ flex: 2 }} disabled={loading}>
+                  {loading ? 'Saving Profile...' : 'Save Profile & Continue'}
+                </button>
+              </div>
             </form>
           ) : !isRegister ? (
             /* MODE 3: Login Form with Role-Aware Email Placeholder (Issue 10) */

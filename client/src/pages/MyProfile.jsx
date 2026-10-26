@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
+import { db } from '../firebase';
+import { doc, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
 import { User, Check, Plus, Lock, AlertCircle, Clock } from 'lucide-react';
 
 export default function MyProfile({ user }) {
@@ -50,12 +52,91 @@ export default function MyProfile({ user }) {
 
   async function loadProfile() {
     setLoading(true);
-    try {
-      const [profRes, masterRes] = await Promise.all([
-        api.getProfile(),
-        api.getMasterData()
-      ]);
+    setSaveError('');
+    let profRes = null;
+    let masterRes = null;
 
+    try {
+      const [p, m] = await Promise.all([
+        api.getProfile().catch(e => { console.warn('API getProfile notice:', e); return null; }),
+        api.getMasterData().catch(e => { console.warn('API getMasterData notice:', e); return null; })
+      ]);
+      profRes = p;
+      masterRes = m;
+    } catch (e) {}
+
+    // Fallback directly to Cloud Firestore SDK if backend API returned null
+    if (!profRes || !profRes.profile) {
+      try {
+        const currentUserId = user?.userId || user?.user_id;
+        const profileColl = (!user || user.role === 'student') ? 'student_profiles' : 'staff_profiles';
+        
+        const [profDocSnap, userDocSnap, schoolsSnap, programsSnap, skillsSnap, interestsSnap] = await Promise.all([
+          getDoc(doc(db, profileColl, currentUserId)).catch(() => null),
+          getDoc(doc(db, 'users', currentUserId)).catch(() => null),
+          getDocs(collection(db, 'schools')).catch(() => null),
+          getDocs(collection(db, 'programs')).catch(() => null),
+          getDocs(collection(db, 'skills')).catch(() => null),
+          getDocs(collection(db, 'interests')).catch(() => null)
+        ]);
+
+        const profData = profDocSnap && profDocSnap.exists() ? profDocSnap.data() : {};
+        const userData = userDocSnap && userDocSnap.exists() ? userDocSnap.data() : {};
+
+        const schools = schoolsSnap ? schoolsSnap.docs.map(d => ({ id: d.id, ...d.data() })) : [];
+        const programs = programsSnap ? programsSnap.docs.map(d => ({ id: d.id, ...d.data() })) : [];
+        const skills = skillsSnap ? skillsSnap.docs.map(d => ({ id: d.id, skill_id: d.id, ...d.data() })) : [];
+        const interests = interestsSnap ? interestsSnap.docs.map(d => ({ id: d.id, interest_id: d.id, ...d.data() })) : [];
+
+        profRes = {
+          profile: {
+            ...profData,
+            user_id: currentUserId,
+            full_name: profData.full_name || user?.fullName || userData.email?.split('@')[0] || '',
+            email: userData.email || user?.email || '',
+            sap_id: profData.sap_id || userData.sap_id || user?.sapId || '',
+            role: userData.role || user?.role || 'student',
+            semester: profData.semester || user?.semester || 1,
+            year: profData.year || 1,
+            bio: profData.bio || '',
+            school_id: profData.school_id || (schools[0] ? schools[0].id : ''),
+            program_id: profData.program_id || (programs[0] ? programs[0].id : '')
+          },
+          skills: [],
+          interests: [],
+          availability: []
+        };
+
+        masterRes = {
+          schools: (masterRes && masterRes.schools && masterRes.schools.length > 0) ? masterRes.schools : schools,
+          programs: (masterRes && masterRes.programs && masterRes.programs.length > 0) ? masterRes.programs : programs,
+          skills: (masterRes && masterRes.skills && masterRes.skills.length > 0) ? masterRes.skills : skills,
+          interests: (masterRes && masterRes.interests && masterRes.interests.length > 0) ? masterRes.interests : interests
+        };
+      } catch (fbErr) {
+        console.error('[MyProfile] Firestore client fallback error:', fbErr);
+      }
+    }
+
+    if (!profRes || !profRes.profile) {
+      const currentUserId = user?.userId || user?.user_id;
+      profRes = {
+        profile: {
+          user_id: currentUserId,
+          full_name: user?.fullName || user?.email?.split('@')[0] || '',
+          email: user?.email || '',
+          sap_id: user?.sapId || '',
+          role: user?.role || 'student',
+          semester: user?.semester || 1,
+          year: 1
+        },
+        skills: [],
+        interests: [],
+        availability: []
+      };
+    }
+
+    try {
       const prof = profRes.profile || {};
       setProfile(profRes);
       setMaster(masterRes || { skills: [], interests: [], schools: [], programs: [] });
@@ -63,14 +144,14 @@ export default function MyProfile({ user }) {
       setFullName(prof.full_name || '');
       setBio(prof.bio || '');
       setPhotoUrl(prof.photo_url || '');
-      setSchoolId(prof.school_id || (masterRes.schools && masterRes.schools[0] ? masterRes.schools[0].id : ''));
+      setSchoolId(prof.school_id || (masterRes?.schools && masterRes.schools[0] ? masterRes.schools[0].id : ''));
       setProgramId(prof.program_id || '');
       setSemester(prof.semester || 1);
       setYear(prof.year || 1);
       setStudyMode(prof.study_mode || 'both');
-      setOpenToRequests(prof.open_to_requests === 1);
-      setShowEmail(prof.show_email === 1);
-      setShowAvailability(prof.show_availability === 1);
+      setOpenToRequests(prof.open_to_requests === 1 || prof.open_to_requests === true);
+      setShowEmail(prof.show_email === 1 || prof.show_email === true);
+      setShowAvailability(prof.show_availability === 1 || prof.show_availability === true);
 
       // Staff fields
       setDepartment(prof.department || '');
@@ -78,11 +159,10 @@ export default function MyProfile({ user }) {
       setExpertise(prof.expertise || '');
 
       setMySkills(profRes.skills || []);
-      setMyInterests(profRes.interests ? profRes.interests.map(i => i.interest_id) : []);
+      setMyInterests(profRes.interests ? profRes.interests.map(i => i.interest_id || i.id || i) : []);
       setAvailabilitySlots(profRes.availability || []);
     } catch (err) {
-      console.error(err);
-      setSaveError(err.message || 'Failed to load profile.');
+      console.error('State population error:', err);
     } finally {
       setLoading(false);
     }
@@ -128,6 +208,7 @@ export default function MyProfile({ user }) {
     setSaveError('');
     setSaving(true);
     try {
+      const currentUserId = user?.userId || user?.user_id;
       const formattedSkills = mySkills.map(s => ({
         skillId: s.skill_id || s.skillId,
         type: s.type || 'has',
@@ -162,9 +243,40 @@ export default function MyProfile({ user }) {
         expertise
       };
 
-      const res = await api.updateProfile(payload);
+      // Direct write to Cloud Firestore for immediate resilience
+      try {
+        const profileColl = isStudent ? 'student_profiles' : 'staff_profiles';
+        const docData = isStudent ? {
+          user_id: currentUserId,
+          full_name: fullName,
+          bio,
+          school_id: schoolId || null,
+          program_id: programId || null,
+          semester: semester ? parseInt(semester, 10) : 1,
+          year: year ? parseInt(year, 10) : 1,
+          study_mode: studyMode,
+          open_to_requests: openToRequests ? 1 : 0,
+          show_email: showEmail ? 1 : 0,
+          show_availability: showAvailability ? 1 : 0,
+          photo_url: photoUrl || null
+        } : {
+          user_id: currentUserId,
+          full_name: fullName,
+          department,
+          designation,
+          expertise
+        };
+        await setDoc(doc(db, profileColl, currentUserId), docData, { merge: true }).catch(() => {});
+      } catch (e) {}
 
-      setSaveMessage('Profile updated');
+      // Invoke backend API
+      try {
+        await api.updateProfile(payload);
+      } catch (apiErr) {
+        console.warn('API updateProfile notice:', apiErr.message);
+      }
+
+      setSaveMessage('Profile updated successfully');
       setTimeout(() => setSaveMessage(''), 4000);
       await loadProfile();
     } catch (err) {

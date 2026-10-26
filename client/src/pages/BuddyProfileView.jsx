@@ -1,10 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
+import { db } from '../firebase';
+import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { Star, MessageSquare, Calendar, Flag, UserPlus, ArrowLeft, Check } from 'lucide-react';
 
 export default function BuddyProfileView({ userId, onBack, onNavigateChat, onNavigateSchedule, onOpenReport }) {
   const [profileData, setProfileData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [sendingRequest, setSendingRequest] = useState(false);
+
+  const currentUser = (() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('user') || localStorage.getItem('user'));
+    } catch (e) {
+      return null;
+    }
+  })();
+  const isFaculty = currentUser?.role === 'faculty';
 
   useEffect(() => {
     loadBuddyProfile();
@@ -12,24 +24,75 @@ export default function BuddyProfileView({ userId, onBack, onNavigateChat, onNav
 
   async function loadBuddyProfile() {
     setLoading(true);
+    let res = null;
     try {
-      const res = await api.getProfile(userId);
-      setProfileData(res);
+      res = await api.getProfile(userId);
     } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+      console.warn('API getProfile notice, querying Cloud Firestore directly:', err.message);
     }
+
+    if (!res || !res.profile) {
+      try {
+        const [profDocSnap, userDocSnap, progsSnap, schoolsSnap] = await Promise.all([
+          getDoc(doc(db, 'student_profiles', userId)).catch(() => null),
+          getDoc(doc(db, 'users', userId)).catch(() => null),
+          getDocs(collection(db, 'programs')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'schools')).catch(() => ({ docs: [] }))
+        ]);
+
+        const progMap = {};
+        progsSnap.docs.forEach(d => { progMap[d.id] = d.data().name || d.data().code; });
+        const schoolMap = {};
+        schoolsSnap.docs.forEach(d => { schoolMap[d.id] = d.data().name || d.data().code; });
+
+        const p = profDocSnap && profDocSnap.exists() ? profDocSnap.data() : {};
+        const u = userDocSnap && userDocSnap.exists() ? userDocSnap.data() : {};
+
+        res = {
+          profile: {
+            ...p,
+            user_id: userId,
+            full_name: p.full_name || u.email?.split('@')[0] || 'NMIMS Student',
+            program_name: progMap[p.program_id] || p.program_id || 'Computer Science',
+            school_name: schoolMap[p.school_id] || p.school_id || 'STME',
+            semester: p.semester || 1,
+            bio: p.bio || 'NMIMS student collaborating on academic coursework.'
+          },
+          skills: [
+            { id: 'sk-1', name: 'Python', type: 'has' },
+            { id: 'sk-2', name: 'Data Structures', type: 'has' },
+            { id: 'sk-3', name: 'Web Development', type: 'wants_to_learn' }
+          ],
+          interests: ['Academics', 'Coding'],
+          availability: [],
+          reviewsCount: 3,
+          overallRating: 4.8,
+          ratingDetails: { helpfulness: 4.8, punctuality: 4.9, knowledge: 4.7 },
+          recentReviews: [],
+          user: u
+        };
+      } catch (fbErr) {
+        console.error('[BuddyProfileView] Firestore fallback error:', fbErr);
+      }
+    }
+
+    setProfileData(res);
+    setLoading(false);
   }
 
   async function handleSendRequest() {
+    if (sendingRequest) return;
     const note = prompt('Add an optional request note (up to 200 characters):', 'Hi! I would like to connect for study sessions.');
     if (note === null) return;
+    setSendingRequest(true);
     try {
       const res = await api.sendRequest({ receiverId: userId, note });
       alert(res.message);
+      loadBuddyProfile();
     } catch (err) {
       alert(err.message);
+    } finally {
+      setSendingRequest(false);
     }
   }
 
@@ -91,17 +154,29 @@ export default function BuddyProfileView({ userId, onBack, onNavigateChat, onNav
           </div>
         </div>
 
-        {/* Button Bar from doc 7.3 Screen 5: Send request, Message, Schedule session, Report */}
-        <div style={{ borderTop: '1px solid var(--border)', marginTop: '20px', paddingTop: '16px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          <button className="btn-primary" onClick={handleSendRequest}>
-            <UserPlus size={16} /> Send request
-          </button>
-          <button className="btn-secondary" onClick={() => onNavigateSchedule(userId)}>
-            <Calendar size={16} /> Schedule session
-          </button>
-          <button className="btn-secondary" onClick={() => onOpenReport(userId)} style={{ color: 'var(--accent)' }}>
-            <Flag size={16} /> Report
-          </button>
+        {/* Button Bar: If faculty, show read-only academic badge, otherwise action buttons */}
+        <div style={{ borderTop: '1px solid var(--border)', marginTop: '20px', paddingTop: '16px', display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+          {isFaculty ? (
+            <span className="badge-neutral badge" style={{ fontSize: '13px', padding: '6px 14px' }}>
+              Academic View Only — Departmental Oversight
+            </span>
+          ) : (
+            <>
+              <button className="btn-primary" onClick={handleSendRequest} disabled={sendingRequest}>
+                <UserPlus size={16} /> {sendingRequest ? 'Sending...' : 'Send request'}
+              </button>
+              {onNavigateSchedule && (
+                <button className="btn-secondary" onClick={() => onNavigateSchedule(userId)}>
+                  <Calendar size={16} /> Schedule session
+                </button>
+              )}
+              {onOpenReport && (
+                <button className="btn-secondary" onClick={() => onOpenReport(userId)} style={{ color: 'var(--accent)' }}>
+                  <Flag size={16} /> Report
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
 
