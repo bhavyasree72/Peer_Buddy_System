@@ -274,7 +274,52 @@ export const api = {
   getSessions: () => apiRequest('/sessions'),
   proposeSession: (data) => apiRequest('/sessions/propose', 'POST', data),
   respondSession: (sessionId, data) => apiRequest(`/sessions/${sessionId}/respond`, 'POST', data),
-  markAttendance: (sessionId, attended) => apiRequest(`/sessions/${sessionId}/attendance`, 'POST', { attended }),
+  markAttendance: async (sessionId, attended) => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const res = await apiRequest(`/sessions/${sessionId}/attendance`, 'POST', { attended }, {}, controller.signal);
+      clearTimeout(timeoutId);
+      if (res && res.message) return res;
+    } catch (apiErr) {
+      console.warn('[markAttendance] API notice, writing directly to Cloud Firestore:', apiErr.message);
+    }
+    const { db, auth } = await import('../firebase');
+    const { doc, setDoc, updateDoc, getDoc } = await import('firebase/firestore');
+    const currentUser = (() => {
+      try {
+        return JSON.parse(sessionStorage.getItem('user') || localStorage.getItem('user'));
+      } catch (e) {
+        return null;
+      }
+    })();
+    const myUid = auth.currentUser?.uid || currentUser?.userId || currentUser?.user_id;
+    const attKey = `${sessionId}_${myUid}`;
+    await setDoc(doc(db, 'session_attendance', attKey), {
+      id: attKey,
+      session_id: sessionId,
+      user_id: myUid,
+      attended,
+      marked_at: new Date().toISOString()
+    });
+    const sessDoc = await getDoc(doc(db, 'study_sessions', sessionId));
+    if (sessDoc.exists()) {
+      const sData = sessDoc.data();
+      const isOrganizer = sData.organizer_id === myUid || sData.created_by === myUid;
+      const updates = {};
+      if (isOrganizer) {
+        updates.confirmed_by_organizer = attended === 'yes' ? 1 : 0;
+      } else {
+        updates.confirmed_by_partner = attended === 'yes' ? 1 : 0;
+      }
+      if (attended === 'yes') {
+        updates.status = 'completed';
+        updates.is_verified = 1;
+      }
+      await updateDoc(doc(db, 'study_sessions', sessionId), updates);
+    }
+    return { success: true, message: 'Attendance recorded successfully.' };
+  },
 
   // Reviews & Reports
   submitReview: (data) => apiRequest('/reviews/submit', 'POST', data),

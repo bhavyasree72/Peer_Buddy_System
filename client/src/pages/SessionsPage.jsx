@@ -24,11 +24,28 @@ export default function SessionsPage({ initialPartnerId, initialConnId, onOpenRa
   });
 
   const [loading, setLoading] = useState(false);
+  const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
     loadSessions();
     loadBuddies();
+
+    // Refresh current time every 15 seconds to auto-enable completed session actions
+    const timer = setInterval(() => setCurrentTime(new Date()), 15000);
+    return () => clearInterval(timer);
   }, []);
+
+  function parseSessionDate(dateStr) {
+    if (!dateStr) return new Date();
+    if (dateStr instanceof Date) return dateStr;
+    const str = String(dateStr).trim();
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (match) {
+      const [, yr, mo, da, hr, mi, se] = match;
+      return new Date(Number(yr), Number(mo) - 1, Number(da), Number(hr), Number(mi), Number(se || 0));
+    }
+    return new Date(str);
+  }
 
   async function loadSessions() {
     setLoading(true);
@@ -164,7 +181,9 @@ export default function SessionsPage({ initialPartnerId, initialConnId, onOpenRa
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '16px' }}>
           {[...sessions].sort((a, b) => new Date(a.start_at) - new Date(b.start_at)).map(s => {
             const isCompleted = s.status === 'completed';
-            const hasEnded = new Date(s.end_at) < new Date();
+            const startDate = parseSessionDate(s.start_at);
+            const endDate = parseSessionDate(s.end_at);
+            const hasEnded = currentTime >= endDate;
             const isConfirmed = s.status === 'confirmed';
 
             return (
@@ -188,7 +207,7 @@ export default function SessionsPage({ initialPartnerId, initialConnId, onOpenRa
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px', color: 'var(--text-main)', marginBottom: '16px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <Clock size={14} color="var(--text-muted)" />
-                      {new Date(s.start_at).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} - {new Date(s.end_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {startDate.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} - {endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -215,15 +234,58 @@ export default function SessionsPage({ initialPartnerId, initialConnId, onOpenRa
                     </>
                   )}
 
-                  {isConfirmed && hasEnded && !s.my_attendance && (
-                    <>
-                      <button className="btn-secondary" style={{ flex: 1, minHeight: '36px', fontSize: '13px' }} onClick={() => handleMarkAttendance(s.session_id, 'no')}>
-                        Missed
-                      </button>
-                      <button className="btn-primary" style={{ flex: 1, minHeight: '36px', fontSize: '13px' }} onClick={() => handleMarkAttendance(s.session_id, 'yes')}>
-                        Mark attended
-                      </button>
-                    </>
+                  {isConfirmed && !s.my_attendance && (
+                    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', gap: '6px' }}>
+                      <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+                        <button
+                          className="btn-secondary"
+                          style={{
+                            flex: 1,
+                            minHeight: '36px',
+                            fontSize: '13px',
+                            opacity: hasEnded ? 1 : 0.5,
+                            cursor: hasEnded ? 'pointer' : 'not-allowed'
+                          }}
+                          disabled={!hasEnded}
+                          onClick={() => {
+                            if (!hasEnded) {
+                              alert(`Session is scheduled until ${endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Attendance can only be recorded after the session time completes.`);
+                              return;
+                            }
+                            handleMarkAttendance(s.session_id, 'no');
+                          }}
+                          title={hasEnded ? 'Mark as missed' : `Session completes at ${endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+                        >
+                          Missed
+                        </button>
+                        <button
+                          className="btn-primary"
+                          style={{
+                            flex: 1,
+                            minHeight: '36px',
+                            fontSize: '13px',
+                            opacity: hasEnded ? 1 : 0.5,
+                            cursor: hasEnded ? 'pointer' : 'not-allowed'
+                          }}
+                          disabled={!hasEnded}
+                          onClick={() => {
+                            if (!hasEnded) {
+                              alert(`Session is scheduled until ${endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Attendance can only be recorded after the session time completes.`);
+                              return;
+                            }
+                            handleMarkAttendance(s.session_id, 'yes');
+                          }}
+                          title={hasEnded ? 'Mark session attended' : `Attendance can only be marked after session completes at ${endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+                        >
+                          Mark attended
+                        </button>
+                      </div>
+                      {!hasEnded && (
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                          Available after session ends ({endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   {(isCompleted || (hasEnded && s.my_attendance === 'yes')) && (
